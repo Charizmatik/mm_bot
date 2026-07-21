@@ -26,7 +26,7 @@ help: ## Показати доступні команди
 	@echo "  make backend-logs       Стежити лише за backend-логами"
 	@echo "  make db-shell           Відкрити psql"
 
-setup: env up migrate migration-check ## Повний перший запуск
+setup: env migrate migration-check up ## Повний перший запуск
 
 env: .env ## Створити .env з шаблону, якщо його немає
 
