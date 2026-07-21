@@ -1,0 +1,92 @@
+x-backend-environment: &backend-environment
+  APP_ENV: ${APP_ENV:-development}
+  DRY_RUN: ${DRY_RUN:-true}
+  DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://market_maker:market_maker@postgres:5432/market_maker}
+  MEXC_API_KEY: ${MEXC_API_KEY:-}
+  MEXC_API_SECRET: ${MEXC_API_SECRET:-}
+  CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:8080}
+  ENGINE_TICK_SECONDS: ${ENGINE_TICK_SECONDS:-1}
+  QUOTE_STALE_SECONDS: ${QUOTE_STALE_SECONDS:-10}
+  BALANCE_REFRESH_SECONDS: ${BALANCE_REFRESH_SECONDS:-10}
+  PAPER_MAKER_FEE_PCT: ${PAPER_MAKER_FEE_PCT:-0.1}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-market_maker}
+      POSTGRES_USER: ${POSTGRES_USER:-market_maker}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-market_maker}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    environment: *backend-environment
+    ports:
+      - "${BACKEND_BIND_ADDRESS:-127.0.0.1}:${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "${HTTP_BIND_ADDRESS:-0.0.0.0}:${HTTP_PORT:-8080}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # This TCP gateway is the only service that can expose PostgreSQL outside
+  # the Docker network. With the default flag it exits without opening a port.
+  remote-db-gateway:
+    image: alpine/socat:1.8.0.3
+    environment:
+      ALLOW_REMOTE_DB_MIGRATIONS: ${ALLOW_REMOTE_DB_MIGRATIONS:-false}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        if [ "$$ALLOW_REMOTE_DB_MIGRATIONS" != "true" ]; then
+          echo "Remote database migrations are disabled"
+          exit 0
+        fi
+        exec socat TCP-LISTEN:5432,fork,reuseaddr TCP:postgres:5432
+    ports:
+      - "${REMOTE_DB_BIND_ADDRESS:-127.0.0.1}:${REMOTE_DB_PORT:-5432}:5432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # Run this service explicitly from a developer PC with --no-deps.
+  remote-migrate:
+    build: ./backend
+    environment:
+      ALLOW_REMOTE_DB_MIGRATIONS: ${ALLOW_REMOTE_DB_MIGRATIONS:-false}
+      DATABASE_URL: ${REMOTE_DATABASE_URL:-sqlite+aiosqlite:///./remote-migration-disabled.sqlite3}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        if [ "$$ALLOW_REMOTE_DB_MIGRATIONS" != "true" ]; then
+          echo "Refusing remote migration: set ALLOW_REMOTE_DB_MIGRATIONS=true"
+          exit 64
+        fi
+        exec alembic upgrade head
+    profiles: ["tools"]
+
+volumes:
+  postgres_data:
