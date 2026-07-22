@@ -7,7 +7,7 @@ const initial: PairForm = {
   base_balance_trigger: '0.01', base_balance_limit: '0.005',
   quote_balance_trigger: '500', quote_balance_limit: '200',
   order_offset_pct: '0.005', red_line_pct: '0.5',
-  pause_minutes: 2, price_precision: 2, quantity_precision: 6,
+  pause_minutes: 2, paper_profit: false, price_precision: 2, quantity_precision: 6,
 };
 
 const labels: Record<string, string> = {
@@ -88,7 +88,7 @@ function App() {
       quote_balance_limit: compactDecimal(p.quote_balance_limit),
       order_offset_pct: compactDecimal(p.order_offset_pct),
       red_line_pct: compactDecimal(p.red_line_pct),
-      pause_minutes: p.pause_minutes, price_precision: p.price_precision,
+      pause_minutes: p.pause_minutes, paper_profit: p.paper_profit, price_precision: p.price_precision,
       quantity_precision: p.quantity_precision,
     });
     setShowForm(true);
@@ -170,6 +170,9 @@ function App() {
         <Field label="Зміщення, %" type="number" value={form.order_offset_pct} onChange={v => setForm({...form, order_offset_pct: v})} />
         <Field label="Червона лінія, %" type="number" value={form.red_line_pct} onChange={v => setForm({...form, red_line_pct: v})} />
         <Field label="Пауза, хв" type="number" value={form.pause_minutes} onChange={v => setForm({...form, pause_minutes: +v})} />
+        <label className="check-field"><input type="checkbox" checked={form.paper_profit}
+          onChange={event => setForm({...form, paper_profit: event.target.checked})} />
+          <span><b>ПП</b><small>Не враховувати RED_LINE у результаті</small></span></label>
         <Field label={`Тригер ${form.base_asset || 'base'}`} type="number" value={form.base_balance_trigger} onChange={v => setForm({...form, base_balance_trigger: v})} />
         <Field label={`Ліміт ${form.base_asset || 'base'}`} type="number" value={form.base_balance_limit} onChange={v => setForm({...form, base_balance_limit: v})} />
         <Field label={`Тригер ${form.quote_asset || 'quote'}`} type="number" value={form.quote_balance_trigger} onChange={v => setForm({...form, quote_balance_trigger: v})} />
@@ -336,7 +339,8 @@ function PairCard({runtime, busy, onAct, onEdit}: {
       <i style={{width: `${baseShare}%`}} /><span /></div>}
     <dl><div><dt>Лот</dt><dd>{formatNumber(p.lot_quote, p.price_precision)} {p.quote_asset}</dd></div><div><dt>Спред</dt><dd>{formatNumber(p.spread_pct, 6)}%</dd></div>
       <div><dt>Зміщення</dt><dd>{formatNumber(p.order_offset_pct, 6)}%</dd></div><div><dt>Red line</dt><dd>{formatNumber(p.red_line_pct, 6)}%</dd></div>
-      <div><dt>Ордери</dt><dd>{runtime.open_orders}</dd></div><div><dt>Пауза</dt><dd>{p.pause_minutes} хв</dd></div></dl>
+      <div><dt>Ордери</dt><dd>{runtime.open_orders}</dd></div><div><dt>Пауза</dt><dd>{p.pause_minutes} хв</dd></div>
+      <div><dt>ПП</dt><dd>{p.paper_profit ? 'Увімкнено' : 'Вимкнено'}</dd></div></dl>
     {p.last_error && <p className="pair-error">{p.last_error}</p>}
     <div className="actions"><button className={p.enabled ? 'danger' : 'primary'} disabled={busy.startsWith(p.id)}
       onClick={() => onAct(p.id, p.enabled ? 'stop' : 'start')}>{p.enabled ? 'Зупинити' : 'Запустити'}</button>

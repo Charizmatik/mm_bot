@@ -63,6 +63,7 @@ class PairConfig(Base):
     order_offset_pct: Mapped[Decimal] = mapped_column(Numeric(12, 8))
     red_line_pct: Mapped[Decimal] = mapped_column(Numeric(12, 8))
     pause_minutes: Mapped[int] = mapped_column(Integer, default=1)
+    paper_profit: Mapped[bool] = mapped_column(Boolean, default=False)
     price_precision: Mapped[int] = mapped_column(Integer, default=2)
     quantity_precision: Mapped[int] = mapped_column(Integer, default=6)
     irb: Mapped[int] = mapped_column(Integer, default=0)

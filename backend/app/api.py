@@ -23,6 +23,18 @@ _symbol_cache: tuple[list, datetime] | None = None
 _symbol_lock = asyncio.Lock()
 
 
+def reported_cycle_profit(cycle: TradeCycle, pair: PairConfig) -> tuple[Decimal, Decimal, Decimal]:
+    """Return the P&L shown in statistics for a completed cycle.
+
+    Paper-profit mode treats a red-line inventory move as unrealized: the
+    cycle and its volume remain visible, but it does not reduce reported P&L.
+    """
+    if pair.paper_profit and cycle.status == CycleStatus.RED_LINE:
+        zero = Decimal("0")
+        return zero, zero, zero
+    return cycle.gross_profit_quote, cycle.commission_quote, cycle.net_profit_quote
+
+
 def normalize_symbol(value: str) -> str:
     return value.upper().replace("_", "").replace("/", "").replace("-", "")
 
@@ -247,6 +259,7 @@ async def statistics(session: AsyncSession = Depends(get_session)) -> Statistics
         is_success = cycle.status == CycleStatus.PROFITABLE
         successful += int(is_success)
         unsuccessful += int(not is_success)
+        reported_gross, reported_commission, reported_net = reported_cycle_profit(cycle, pair)
         quote = quote_totals.setdefault(
             pair.quote_asset,
             {"volume": Decimal("0"), "volume_usdt": Decimal("0"),
@@ -261,9 +274,9 @@ async def statistics(session: AsyncSession = Depends(get_session)) -> Statistics
         )
         quote["volume"] += cycle_volume
         quote["volume_usdt"] += cycle_volume_usdt
-        quote["gross"] += cycle.gross_profit_quote
-        quote["commission"] += cycle.commission_quote
-        quote["net"] += cycle.net_profit_quote
+        quote["gross"] += reported_gross
+        quote["commission"] += reported_commission
+        quote["net"] += reported_net
 
         item = pair_totals.setdefault(pair.id, {
             "symbol": pair.symbol, "quote_asset": pair.quote_asset, "successful": 0, "unsuccessful": 0,
@@ -273,9 +286,9 @@ async def statistics(session: AsyncSession = Depends(get_session)) -> Statistics
         item["successful" if is_success else "unsuccessful"] += 1
         item["volume"] += cycle_volume
         item["volume_usdt"] += cycle_volume_usdt
-        item["gross"] += cycle.gross_profit_quote
-        item["commission"] += cycle.commission_quote
-        item["net"] += cycle.net_profit_quote
+        item["gross"] += reported_gross
+        item["commission"] += reported_commission
+        item["net"] += reported_net
 
     total = successful + unsuccessful
     rate = Decimal(successful * 100) / Decimal(total) if total else Decimal("0")

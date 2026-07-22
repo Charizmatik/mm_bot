@@ -1,5 +1,7 @@
 import asyncio
 import contextlib
+import logging
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -28,6 +30,7 @@ from app.services.pricing import (
 
 
 OPEN_ORDER_STATUSES = {OrderStatus.NEW, OrderStatus.PARTIALLY_FILLED}
+logger = logging.getLogger(__name__)
 
 
 class MarketMakerEngine:
@@ -35,12 +38,15 @@ class MarketMakerEngine:
         self.exchange = exchange
         self.settings = settings
         self.quotes: dict[str, tuple[Quote, datetime]] = {}
+        self._quote_received_monotonic: dict[str, float] = {}
         self.pair_balances: dict[str, tuple[Decimal, Decimal, datetime]] = {}
         self._account_balance_cache: tuple[dict[str, Decimal], datetime] | None = None
         self._balance_lock = asyncio.Lock()
         self._runner: asyncio.Task | None = None
         self._stream: asyncio.Task | None = None
         self._symbols: set[str] = set()
+        self._stream_restart_requested = False
+        self._stale_quote_symbols: set[str] = set()
         self._locks: dict[uuid.UUID, asyncio.Lock] = {}
         self._stopping = False
 
@@ -59,15 +65,25 @@ class MarketMakerEngine:
 
     async def _on_quote(self, quote: Quote) -> None:
         self.quotes[quote.symbol] = (quote, datetime.now(timezone.utc))
+        self._quote_received_monotonic[quote.symbol] = time.monotonic()
+        if quote.symbol in self._stale_quote_symbols:
+            self._stale_quote_symbols.remove(quote.symbol)
+            logger.info("Fresh quote recovered for %s", quote.symbol)
+
+    def _quote_is_stale(self, symbol: str, quoted_at: datetime) -> bool:
+        received_at = self._quote_received_monotonic.get(symbol)
+        if received_at is not None:
+            return time.monotonic() - received_at > self.settings.quote_stale_seconds
+        return (datetime.now(timezone.utc) - quoted_at).total_seconds() > self.settings.quote_stale_seconds
 
     async def ensure_pair_runtime(self, pair: PairConfig) -> None:
         """Populate current quote and balances even while a pair is stopped."""
-        now = datetime.now(timezone.utc)
         quote_item = self.quotes.get(pair.symbol)
-        if not quote_item or (now - quote_item[1]).total_seconds() > self.settings.quote_stale_seconds:
+        if not quote_item or self._quote_is_stale(pair.symbol, quote_item[1]):
             quote = await self.exchange.book_quote(pair.symbol)
-            self.quotes[pair.symbol] = (quote, now)
+            await self._on_quote(quote)
 
+        now = datetime.now(timezone.utc)
         balance_item = self.pair_balances.get(pair.symbol)
         if not balance_item or (now - balance_item[2]).total_seconds() > self.settings.balance_refresh_seconds:
             balances, balances_at = await self._account_balances()
@@ -91,13 +107,19 @@ class MarketMakerEngine:
             self._account_balance_cache = (balances, now)
             return balances, now
 
-    async def _refresh_stream(self, symbols: set[str]) -> None:
-        if symbols == self._symbols and self._stream and not self._stream.done():
+    async def _refresh_stream(self, symbols: set[str], force: bool = False) -> None:
+        if not force and symbols == self._symbols and self._stream and not self._stream.done():
             return
         if self._stream:
             self._stream.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._stream
+        if force:
+            # Do not repeatedly classify the same cached quote as stale while
+            # the replacement stream is still connecting.
+            for symbol in self._stale_quote_symbols:
+                self.quotes.pop(symbol, None)
+                self._quote_received_monotonic.pop(symbol, None)
         self._symbols = symbols
         if symbols:
             self._stream = asyncio.create_task(
@@ -109,7 +131,9 @@ class MarketMakerEngine:
             try:
                 async with SessionLocal() as session:
                     pairs = list((await session.scalars(select(PairConfig).where(PairConfig.enabled.is_(True)))).all())
-                await self._refresh_stream({pair.symbol for pair in pairs})
+                force_stream_restart = self._stream_restart_requested
+                self._stream_restart_requested = False
+                await self._refresh_stream({pair.symbol for pair in pairs}, force=force_stream_restart)
                 await asyncio.gather(*(self._process_safe(pair.id) for pair in pairs))
             except asyncio.CancelledError:
                 raise
@@ -173,8 +197,19 @@ class MarketMakerEngine:
             if not quote_item:
                 return
             quote, quoted_at = quote_item
-            if (now - quoted_at).total_seconds() > self.settings.quote_stale_seconds:
-                raise RuntimeError(f"stale quote for {pair.symbol}")
+            if self._quote_is_stale(pair.symbol, quoted_at):
+                self._stream_restart_requested = True
+                if pair.symbol not in self._stale_quote_symbols:
+                    self._stale_quote_symbols.add(pair.symbol)
+                    logger.warning("Quote for %s is stale; restarting the quote stream", pair.symbol)
+                # A stale quote is a temporary data condition, not a trading
+                # failure. Keep existing orders untouched and wait for a fresh
+                # book update before making any decision.
+                if pair.status == PairStatus.ERROR and pair.last_error and pair.last_error.startswith("stale quote"):
+                    pair.status = PairStatus.RUNNING
+                    pair.last_error = None
+                    await session.commit()
+                return
 
             if cycle is None:
                 await self._open_cycle(session, pair, quote)

@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     engine_tick_seconds: float = 1.0
     quote_stale_seconds: float = 10.0
     balance_refresh_seconds: float = 10.0
+    mexc_recv_window_ms: int = 10_000
+    mexc_time_sync_interval_seconds: float = 300
     paper_maker_fee_pct: Decimal = Decimal("0.1")
 
     @property

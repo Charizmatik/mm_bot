@@ -3,8 +3,8 @@ from decimal import Decimal
 
 import pytest
 
-from app.api import stop_pair
-from app.models import Event, PairConfig, PairStatus
+from app.api import reported_cycle_profit, stop_pair
+from app.models import CycleStatus, Event, PairConfig, PairStatus, TradeCycle
 
 
 class FakeSession:
@@ -55,3 +55,47 @@ async def test_manual_stop_preserves_existing_exchange_orders() -> None:
     event = next(item for item in session.added if isinstance(item, Event))
     assert event.kind == "manual_stop"
     assert "checked on restart" in event.message
+
+
+def test_paper_profit_excludes_red_line_pnl_from_reported_result() -> None:
+    pair = PairConfig(paper_profit=True)
+    cycle = TradeCycle(
+        status=CycleStatus.RED_LINE,
+        gross_profit_quote=Decimal("-2.5"),
+        commission_quote=Decimal("0.1"),
+        net_profit_quote=Decimal("-2.6"),
+    )
+
+    assert reported_cycle_profit(cycle, pair) == (Decimal("0"), Decimal("0"), Decimal("0"))
+
+
+def test_disabled_paper_profit_keeps_current_red_line_result() -> None:
+    pair = PairConfig(paper_profit=False)
+    cycle = TradeCycle(
+        status=CycleStatus.RED_LINE,
+        gross_profit_quote=Decimal("-2.5"),
+        commission_quote=Decimal("0.1"),
+        net_profit_quote=Decimal("-2.6"),
+    )
+
+    assert reported_cycle_profit(cycle, pair) == (
+        Decimal("-2.5"),
+        Decimal("0.1"),
+        Decimal("-2.6"),
+    )
+
+
+def test_paper_profit_keeps_profitable_cycle_result() -> None:
+    pair = PairConfig(paper_profit=True)
+    cycle = TradeCycle(
+        status=CycleStatus.PROFITABLE,
+        gross_profit_quote=Decimal("1.5"),
+        commission_quote=Decimal("0.1"),
+        net_profit_quote=Decimal("1.4"),
+    )
+
+    assert reported_cycle_profit(cycle, pair) == (
+        Decimal("1.5"),
+        Decimal("0.1"),
+        Decimal("1.4"),
+    )

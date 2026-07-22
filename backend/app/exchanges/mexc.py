@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import time
 from decimal import Decimal
 from urllib.parse import urlencode
@@ -16,6 +17,9 @@ from app.models import OrderSide, OrderStatus
 
 class MexcError(RuntimeError):
     pass
+
+
+logger = logging.getLogger(__name__)
 
 
 def parse_symbols(data: dict) -> list[ExchangeSymbol]:
@@ -38,26 +42,77 @@ class MexcExchange(Exchange):
     REST_URL = "https://api.mexc.com"
     WS_URL = "wss://wbs-api.mexc.com/ws"
 
-    def __init__(self, api_key: str, api_secret: str) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        api_secret: str,
+        recv_window_ms: int = 10_000,
+        time_sync_interval_seconds: float = 300,
+    ) -> None:
         self.api_key = api_key
         self.api_secret = api_secret.encode()
+        self.recv_window_ms = recv_window_ms
+        self.time_sync_interval_seconds = time_sync_interval_seconds
         self.client = httpx.AsyncClient(base_url=self.REST_URL, timeout=10)
+        self._time_offset_ms = 0
+        self._time_synced_at: float | None = None
+        self._time_lock = asyncio.Lock()
         self._closed = False
 
     def _signed(self, params: dict[str, str | int]) -> dict[str, str | int]:
         if not self.api_key or not self.api_secret:
             raise MexcError("MEXC_API_KEY and MEXC_API_SECRET are required for live mode")
-        params = {**params, "timestamp": int(time.time() * 1000), "recvWindow": 5000}
+        params = {
+            **params,
+            "timestamp": int(time.time() * 1000) + self._time_offset_ms,
+            "recvWindow": self.recv_window_ms,
+        }
         params["signature"] = hmac.new(self.api_secret, urlencode(params).encode(), hashlib.sha256).hexdigest()
         return params
 
+    async def _sync_server_time(self, force: bool = False) -> None:
+        if (
+            not force
+            and self._time_synced_at is not None
+            and time.monotonic() - self._time_synced_at < self.time_sync_interval_seconds
+        ):
+            return
+        async with self._time_lock:
+            if (
+                not force
+                and self._time_synced_at is not None
+                and time.monotonic() - self._time_synced_at < self.time_sync_interval_seconds
+            ):
+                return
+            started_ms = time.time_ns() // 1_000_000
+            response = await self.client.get("/api/v3/time")
+            response.raise_for_status()
+            finished_ms = time.time_ns() // 1_000_000
+            server_time_ms = int(response.json()["serverTime"])
+            self._time_offset_ms = server_time_ms - ((started_ms + finished_ms) // 2)
+            self._time_synced_at = time.monotonic()
+            logger.info("MEXC clock synchronized; offset=%sms", self._time_offset_ms)
+
     async def _private(self, method: str, path: str, params: dict) -> dict:
-        response = await self.client.request(
-            method, path, params=self._signed(params), headers={"X-MEXC-APIKEY": self.api_key}
-        )
-        if response.is_error:
-            raise MexcError(f"MEXC {response.status_code}: {response.text[:300]}")
-        return response.json()
+        await self._sync_server_time()
+        for attempt in range(2):
+            response = await self.client.request(
+                method, path, params=self._signed(params), headers={"X-MEXC-APIKEY": self.api_key}
+            )
+            if not response.is_error:
+                return response.json()
+
+            try:
+                error_code = response.json().get("code")
+            except (ValueError, AttributeError):
+                error_code = None
+            if error_code == 700003 and attempt == 0:
+                logger.warning("MEXC rejected %s %s timestamp; resynchronizing and retrying", method, path)
+                await self._sync_server_time(force=True)
+                continue
+            raise MexcError(f"MEXC {method} {path} {response.status_code}: {response.text[:300]}")
+
+        raise MexcError(f"MEXC {method} {path}: timestamp retry exhausted")
 
     async def balances(self) -> dict[str, Decimal]:
         data = await self._private("GET", "/api/v3/account", {})
@@ -141,7 +196,8 @@ class MexcExchange(Exchange):
                             await handler(Quote(symbol, Decimal(bid), Decimal(ask)))
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
+                logger.warning("MEXC quote stream disconnected; retrying in %ss: %s", delay, exc)
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 30)
 
