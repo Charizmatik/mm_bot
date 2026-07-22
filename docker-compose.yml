@@ -52,7 +52,7 @@ services:
     restart: unless-stopped
 
   # This TCP gateway is the only service that can expose PostgreSQL outside
-  # the Docker network. With the default flag it exits without opening a port.
+  # the Docker network. It is not created unless its profile is enabled.
   remote-db-gateway:
     image: alpine/socat:1.8.0.3
     environment:
@@ -66,11 +66,12 @@ services:
         fi
         exec socat TCP-LISTEN:5432,fork,reuseaddr TCP:postgres:5432
     ports:
-      - "${REMOTE_DB_BIND_ADDRESS:-127.0.0.1}:${REMOTE_DB_PORT:-5432}:5432"
+      - "${REMOTE_DB_BIND_ADDRESS:-127.0.0.1}:${REMOTE_DB_PORT:-15432}:5432"
     depends_on:
       postgres:
         condition: service_healthy
     restart: "no"
+    profiles: ["remote-migrations"]
 
   # Run this service explicitly from a developer PC with --no-deps.
   remote-migrate:
