@@ -57,7 +57,7 @@ async def test_manual_stop_preserves_existing_exchange_orders() -> None:
     assert "checked on restart" in event.message
 
 
-def test_paper_profit_excludes_red_line_pnl_from_reported_result() -> None:
+def test_paper_profit_excludes_red_line_market_pnl_but_keeps_commission() -> None:
     cycle = TradeCycle(
         status=CycleStatus.RED_LINE,
         gross_profit_quote=Decimal("-2.5"),
@@ -65,7 +65,11 @@ def test_paper_profit_excludes_red_line_pnl_from_reported_result() -> None:
         net_profit_quote=Decimal("-2.6"),
     )
 
-    assert reported_cycle_profit(cycle, True) == (Decimal("0"), Decimal("0"), Decimal("0"))
+    assert reported_cycle_profit(cycle, True) == (
+        Decimal("0"),
+        Decimal("0.1"),
+        Decimal("-0.1"),
+    )
 
 
 def test_disabled_paper_profit_keeps_current_red_line_result() -> None:

@@ -27,11 +27,13 @@ def reported_cycle_profit(cycle: TradeCycle, paper_profit: bool) -> tuple[Decima
     """Return the P&L shown in statistics for a completed cycle.
 
     Paper-profit mode treats a red-line inventory move as unrealized: the
-    cycle and its volume remain visible, but it does not reduce reported P&L.
+    cycle and its volume remain visible, but only its mark-to-market result is
+    excluded.  Executed-order commissions are real costs and must still reduce
+    reported P&L.
     """
     if paper_profit and cycle.status == CycleStatus.RED_LINE:
         zero = Decimal("0")
-        return zero, zero, zero
+        return zero, cycle.commission_quote, -cycle.commission_quote
     return cycle.gross_profit_quote, cycle.commission_quote, cycle.net_profit_quote
 
 
