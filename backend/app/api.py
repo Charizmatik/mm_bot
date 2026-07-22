@@ -5,15 +5,18 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import get_settings
 from app.db import get_session
-from app.models import CycleStatus, Event, Order, OrderStatus, PairConfig, PairStatus, TradeCycle
+from app.models import (
+    CycleStatus, Event, Order, OrderSide, OrderStatus, PairConfig, PairStatus, TradeCycle,
+)
 from app.schemas import (
-    EventRead, FillRead, Health, ManualIrb, OrderRead, PairCreate, PairRead, PairRuntime, PairUpdate,
+    ActiveOrderRead, EventRead, FillRead, Health, ManualIrb, OrderRead, PairCreate, PairRead,
+    PairRuntime, PairUpdate,
     PairStatistics, ProfitBucket, Statistics,
     SymbolRead,
 )
@@ -39,6 +42,14 @@ def reported_cycle_profit(cycle: TradeCycle, paper_profit: bool) -> tuple[Decima
 
 def normalize_symbol(value: str) -> str:
     return value.upper().replace("_", "").replace("/", "").replace("-", "")
+
+
+def order_distance_pct(side: OrderSide, market_price: Decimal | None, order_price: Decimal) -> Decimal | None:
+    """Return the directional market move still needed to reach a limit order."""
+    if market_price is None or market_price <= 0:
+        return None
+    distance = market_price - order_price if side == OrderSide.BUY else order_price - market_price
+    return max(distance, Decimal("0")) * Decimal("100") / market_price
 
 
 async def _exchange_symbols(request: Request) -> list:
@@ -90,19 +101,38 @@ async def list_pairs(request: Request, session: AsyncSession = Depends(get_sessi
             await request.app.state.engine.ensure_pair_runtime(pair)
         quote_item = request.app.state.engine.quotes.get(pair.symbol)
         balance_item = request.app.state.engine.pair_balances.get(pair.symbol)
-        open_count = await session.scalar(
-            select(func.count(Order.id)).join(TradeCycle).where(
+        active_orders = list((await session.scalars(
+            select(Order).join(TradeCycle).where(
                 TradeCycle.pair_id == pair.id,
+                TradeCycle.status == CycleStatus.OPEN,
                 Order.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_FILLED]),
-            )
-        )
+            ).order_by(Order.created_at.desc())
+        )).all())
         quote, quoted_at = quote_item if quote_item else (None, None)
         base_free, quote_free, balance_updated_at = balance_item if balance_item else (None, None, None)
+        orders_by_side: dict[OrderSide, Order] = {}
+        for order in active_orders:
+            orders_by_side.setdefault(order.side, order)
+        buy_order = orders_by_side.get(OrderSide.BUY)
+        sell_order = orders_by_side.get(OrderSide.SELL)
         result.append(PairRuntime(pair=PairRead.model_validate(pair), bid=quote.bid if quote else None,
-                                  ask=quote.ask if quote else None, quote_updated_at=quoted_at,
+                                  ask=quote.ask if quote else None,
+                                  bid_order=(ActiveOrderRead(
+                                      price=buy_order.price,
+                                      distance_pct=order_distance_pct(
+                                          OrderSide.BUY, quote.bid if quote else None, buy_order.price
+                                      ),
+                                  ) if buy_order else None),
+                                  ask_order=(ActiveOrderRead(
+                                      price=sell_order.price,
+                                      distance_pct=order_distance_pct(
+                                          OrderSide.SELL, quote.ask if quote else None, sell_order.price
+                                      ),
+                                  ) if sell_order else None),
+                                  quote_updated_at=quoted_at,
                                   base_free=base_free, quote_free=quote_free,
                                   balance_updated_at=balance_updated_at,
-                                  open_orders=open_count or 0))
+                                  open_orders=len(active_orders)))
     return result
 
 

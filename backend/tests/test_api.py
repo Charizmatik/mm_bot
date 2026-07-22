@@ -3,8 +3,8 @@ from decimal import Decimal
 
 import pytest
 
-from app.api import reported_cycle_profit, stop_pair
-from app.models import CycleStatus, Event, PairConfig, PairStatus, TradeCycle
+from app.api import order_distance_pct, reported_cycle_profit, stop_pair
+from app.models import CycleStatus, Event, OrderSide, PairConfig, PairStatus, TradeCycle
 
 
 class FakeSession:
@@ -24,6 +24,22 @@ class FakeSession:
 
     async def refresh(self, value: object) -> None:
         pass
+
+
+@pytest.mark.parametrize(("side", "market_price", "order_price", "expected"), [
+    (OrderSide.BUY, Decimal("100"), Decimal("99.5"), Decimal("0.5")),
+    (OrderSide.SELL, Decimal("100"), Decimal("100.75"), Decimal("0.75")),
+    (OrderSide.BUY, Decimal("99"), Decimal("99.5"), Decimal("0")),
+    (OrderSide.SELL, Decimal("101"), Decimal("100.75"), Decimal("0")),
+])
+def test_order_distance_pct_counts_down_to_execution_price(
+    side: OrderSide, market_price: Decimal, order_price: Decimal, expected: Decimal
+) -> None:
+    assert order_distance_pct(side, market_price, order_price) == expected
+
+
+def test_order_distance_pct_is_unavailable_without_market_price() -> None:
+    assert order_distance_pct(OrderSide.BUY, None, Decimal("99.5")) is None
 
 
 @pytest.mark.asyncio

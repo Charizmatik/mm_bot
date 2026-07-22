@@ -324,8 +324,14 @@ function PairCard({runtime, busy, onAct, onEdit}: {
   return <article className={`pair-card ${p.status}`}>
     <div className="pair-head"><div><span className="exchange">{p.exchange}</span><h3>{p.base_asset}<em>/{p.quote_asset}</em></h3></div>
       <span className="status"><i />{labels[p.status] || p.status}</span></div>
-    <div className="quote"><div><span>BID</span><strong>{formatNumber(runtime.bid, p.price_precision, true)}</strong></div>
-      <div><span>ASK</span><strong>{formatNumber(runtime.ask, p.price_precision, true)}</strong></div></div>
+    <div className="quote"><div><span>BID</span><strong>{formatNumber(runtime.bid, p.price_precision, true)}</strong>
+      {runtime.bid_order && <small><b>BUY {formatNumber(runtime.bid_order.price, p.price_precision, true)}</b>
+        <em>До виконання {runtime.bid_order.distance_pct === null ? '—' :
+          `${formatNumber(runtime.bid_order.distance_pct, 4)}%`}</em></small>}</div>
+      <div><span>ASK</span><strong>{formatNumber(runtime.ask, p.price_precision, true)}</strong>
+        {runtime.ask_order && <small><b>SELL {formatNumber(runtime.ask_order.price, p.price_precision, true)}</b>
+          <em>До виконання {runtime.ask_order.distance_pct === null ? '—' :
+            `${formatNumber(runtime.ask_order.distance_pct, 4)}%`}</em></small>}</div></div>
     <div className="irb-row"><span>Індикатор руху балансу</span><div>
       <b>{p.irb > 0 ? '+' : ''}{p.irb}</b></div></div>
     <div className="balance-grid">

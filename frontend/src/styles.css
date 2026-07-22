@@ -47,7 +47,8 @@ th { color:#697693; font:500 10px DM Mono; text-transform:uppercase; } tbody tr:
 .status { height:max-content; display:flex; align-items:center; gap:8px; background:#171e31; border-radius:20px; padding:7px 10px; font-size:11px; color:#aab2c8; }
 .status i { background:#66718f; box-shadow:none; }.running .status i { background:#42d392; box-shadow:0 0 9px #42d392; }
 .quote { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:24px 0 20px; }
-.quote div { background:#0a0f1e; border:1px solid #202941; border-radius:9px; padding:12px; }.quote span { color:#63708e; font:10px DM Mono; }.quote strong { display:block; margin-top:5px; font:500 16px DM Mono; }
+.quote>div { background:#0a0f1e; border:1px solid #202941; border-radius:9px; padding:12px; }.quote span { color:#63708e; font:10px DM Mono; }.quote strong { display:block; margin-top:5px; font:500 16px DM Mono; }
+.quote small { display:flex; justify-content:space-between; gap:8px; margin-top:10px; padding-top:9px; border-top:1px solid #202941; font:10px DM Mono; }.quote small b { color:#c2c9da; font-weight:500; }.quote small em { color:#8a96b2; font-style:normal; white-space:nowrap; }
 .irb-row { display:flex; justify-content:space-between; align-items:center; color:#8e98b3; font-size:12px; }.irb-row b { color:#e9ecf5; font:500 18px DM Mono; }.irb-row small { color:#66718f; }.irb-row .warn b { color:#f5b942; }
 .balance-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:12px 0 21px; }
 .balance-grid>div { background:#0a0f1e; border:1px solid #202941; border-radius:9px; padding:11px; }

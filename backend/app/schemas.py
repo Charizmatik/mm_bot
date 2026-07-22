@@ -51,10 +51,17 @@ class PairRead(PairCreate):
     updated_at: datetime
 
 
+class ActiveOrderRead(BaseModel):
+    price: Decimal
+    distance_pct: Decimal | None = None
+
+
 class PairRuntime(BaseModel):
     pair: PairRead
     bid: Decimal | None = None
     ask: Decimal | None = None
+    bid_order: ActiveOrderRead | None = None
+    ask_order: ActiveOrderRead | None = None
     quote_updated_at: datetime | None = None
     base_free: Decimal | None = None
     quote_free: Decimal | None = None
