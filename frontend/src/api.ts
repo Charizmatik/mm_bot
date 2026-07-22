@@ -17,7 +17,7 @@ export const api = {
   pairs: () => call<Runtime[]>('/pairs'),
   events: () => call<BotEvent[]>('/events?limit=80'),
   orders: () => call<OrderDetails[]>('/orders?limit=200'),
-  statistics: () => call<Statistics>('/statistics'),
+  statistics: (paperProfit = false) => call<Statistics>(`/statistics?paper_profit=${paperProfit}`),
   symbols: (query: string) => call<ExchangeSymbol[]>(`/symbols?q=${encodeURIComponent(query)}&limit=30`),
   create: (form: PairForm) => call<Pair>('/pairs', { method: 'POST', body: JSON.stringify(form) }),
   update: (id: string, form: PairForm) => call<Pair>(`/pairs/${id}`, {

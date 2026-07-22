@@ -58,7 +58,6 @@ async def test_manual_stop_preserves_existing_exchange_orders() -> None:
 
 
 def test_paper_profit_excludes_red_line_pnl_from_reported_result() -> None:
-    pair = PairConfig(paper_profit=True)
     cycle = TradeCycle(
         status=CycleStatus.RED_LINE,
         gross_profit_quote=Decimal("-2.5"),
@@ -66,11 +65,10 @@ def test_paper_profit_excludes_red_line_pnl_from_reported_result() -> None:
         net_profit_quote=Decimal("-2.6"),
     )
 
-    assert reported_cycle_profit(cycle, pair) == (Decimal("0"), Decimal("0"), Decimal("0"))
+    assert reported_cycle_profit(cycle, True) == (Decimal("0"), Decimal("0"), Decimal("0"))
 
 
 def test_disabled_paper_profit_keeps_current_red_line_result() -> None:
-    pair = PairConfig(paper_profit=False)
     cycle = TradeCycle(
         status=CycleStatus.RED_LINE,
         gross_profit_quote=Decimal("-2.5"),
@@ -78,7 +76,7 @@ def test_disabled_paper_profit_keeps_current_red_line_result() -> None:
         net_profit_quote=Decimal("-2.6"),
     )
 
-    assert reported_cycle_profit(cycle, pair) == (
+    assert reported_cycle_profit(cycle, False) == (
         Decimal("-2.5"),
         Decimal("0.1"),
         Decimal("-2.6"),
@@ -86,7 +84,6 @@ def test_disabled_paper_profit_keeps_current_red_line_result() -> None:
 
 
 def test_paper_profit_keeps_profitable_cycle_result() -> None:
-    pair = PairConfig(paper_profit=True)
     cycle = TradeCycle(
         status=CycleStatus.PROFITABLE,
         gross_profit_quote=Decimal("1.5"),
@@ -94,7 +91,7 @@ def test_paper_profit_keeps_profitable_cycle_result() -> None:
         net_profit_quote=Decimal("1.4"),
     )
 
-    assert reported_cycle_profit(cycle, pair) == (
+    assert reported_cycle_profit(cycle, True) == (
         Decimal("1.5"),
         Decimal("0.1"),
         Decimal("1.4"),

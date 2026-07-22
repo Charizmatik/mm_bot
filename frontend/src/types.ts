@@ -4,7 +4,6 @@ export type Pair = {
   base_balance_trigger: string; base_balance_limit: string;
   quote_balance_trigger: string; quote_balance_limit: string;
   order_offset_pct: string; red_line_pct: string; pause_minutes: number;
-  paper_profit: boolean;
   price_precision: number; quantity_precision: number; irb: number;
   status: string; enabled: boolean; paused_until: string | null; last_error: string | null;
 };
@@ -23,7 +22,7 @@ export type PairForm = {
   base_balance_trigger: string; base_balance_limit: string;
   quote_balance_trigger: string; quote_balance_limit: string;
   order_offset_pct: string; red_line_pct: string;
-  pause_minutes: number; paper_profit: boolean; price_precision: number; quantity_precision: number;
+  pause_minutes: number; price_precision: number; quantity_precision: number;
 };
 
 export type ProfitBucket = {

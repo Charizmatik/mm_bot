@@ -20,7 +20,6 @@ class PairCreate(BaseModel):
     order_offset_pct: Decimal = Field(gt=0, le=10)
     red_line_pct: Decimal = Field(gt=0, le=50)
     pause_minutes: int = Field(ge=0, le=1440)
-    paper_profit: bool = False
     price_precision: int = Field(ge=0, le=18)
     quantity_precision: int = Field(default=6, ge=0, le=18)
 

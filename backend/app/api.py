@@ -23,13 +23,13 @@ _symbol_cache: tuple[list, datetime] | None = None
 _symbol_lock = asyncio.Lock()
 
 
-def reported_cycle_profit(cycle: TradeCycle, pair: PairConfig) -> tuple[Decimal, Decimal, Decimal]:
+def reported_cycle_profit(cycle: TradeCycle, paper_profit: bool) -> tuple[Decimal, Decimal, Decimal]:
     """Return the P&L shown in statistics for a completed cycle.
 
     Paper-profit mode treats a red-line inventory move as unrealized: the
     cycle and its volume remain visible, but it does not reduce reported P&L.
     """
-    if pair.paper_profit and cycle.status == CycleStatus.RED_LINE:
+    if paper_profit and cycle.status == CycleStatus.RED_LINE:
         zero = Decimal("0")
         return zero, zero, zero
     return cycle.gross_profit_quote, cycle.commission_quote, cycle.net_profit_quote
@@ -242,7 +242,10 @@ async def list_orders(
 
 
 @router.get("/statistics", response_model=Statistics)
-async def statistics(session: AsyncSession = Depends(get_session)) -> Statistics:
+async def statistics(
+    paper_profit: bool = False,
+    session: AsyncSession = Depends(get_session),
+) -> Statistics:
     rows = (
         await session.execute(
             select(TradeCycle, PairConfig)
@@ -259,7 +262,7 @@ async def statistics(session: AsyncSession = Depends(get_session)) -> Statistics
         is_success = cycle.status == CycleStatus.PROFITABLE
         successful += int(is_success)
         unsuccessful += int(not is_success)
-        reported_gross, reported_commission, reported_net = reported_cycle_profit(cycle, pair)
+        reported_gross, reported_commission, reported_net = reported_cycle_profit(cycle, paper_profit)
         quote = quote_totals.setdefault(
             pair.quote_asset,
             {"volume": Decimal("0"), "volume_usdt": Decimal("0"),
