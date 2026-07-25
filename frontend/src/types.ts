@@ -11,11 +11,16 @@ export type Pair = {
 export type Runtime = {
   pair: Pair; bid: string | null; ask: string | null; quote_updated_at: string | null;
   bid_order: ActiveOrder | null; ask_order: ActiveOrder | null;
+  red_line: RedLine | null;
   base_free: string | null; quote_free: string | null; balance_updated_at: string | null; open_orders: number;
 };
 
 export type ActiveOrder = {
   price: string; distance_pct: string | null;
+};
+
+export type RedLine = {
+  filled_side: 'BUY' | 'SELL'; reference_price: string; trigger_price: string; distance_pct: string | null;
 };
 
 export type BotEvent = {

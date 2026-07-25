@@ -354,12 +354,19 @@ function PairCard({runtime, busy, onAct, onEdit}: {
       <span className="status"><i />{labels[p.status] || p.status}</span></div>
     <div className="quote"><div><span>BID</span><strong>{formatNumber(runtime.bid, p.price_precision, true)}</strong>
       {runtime.bid_order && <small><b>BUY {formatNumber(runtime.bid_order.price, p.price_precision, true)}</b>
-        <em>До виконання {runtime.bid_order.distance_pct === null ? '—' :
+        <em>До BUY {runtime.bid_order.distance_pct === null ? '—' :
           `${formatNumber(runtime.bid_order.distance_pct, 4)}%`}</em></small>}</div>
       <div><span>ASK</span><strong>{formatNumber(runtime.ask, p.price_precision, true)}</strong>
         {runtime.ask_order && <small><b>SELL {formatNumber(runtime.ask_order.price, p.price_precision, true)}</b>
-          <em>До виконання {runtime.ask_order.distance_pct === null ? '—' :
+          <em>До SELL {runtime.ask_order.distance_pct === null ? '—' :
             `${formatNumber(runtime.ask_order.distance_pct, 4)}%`}</em></small>}</div></div>
+    {runtime.red_line && <div className="red-line-status">
+      <div><span>RED LINE · {runtime.red_line.filled_side} виконано</span>
+        <small>Ринок має піти {runtime.red_line.filled_side === 'BUY' ? 'вниз ↓' : 'вгору ↑'}</small></div>
+      <div><span>Поріг</span><b>{formatNumber(runtime.red_line.trigger_price, p.price_precision, true)}</b></div>
+      <div><span>До спрацювання</span><b>{runtime.red_line.distance_pct === null ? '—' :
+        `${formatNumber(runtime.red_line.distance_pct, 4)}%`}</b></div>
+    </div>}
     <div className="irb-row"><span>Індикатор руху балансу</span><div>
       <b>{p.irb > 0 ? '+' : ''}{p.irb}</b></div></div>
     <div className="balance-grid">

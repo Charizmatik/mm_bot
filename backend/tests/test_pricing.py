@@ -3,7 +3,8 @@ from decimal import Decimal
 import pytest
 
 from app.services.pricing import (
-    Prices, balance_level, irb_after_unmatched_fill, quantities, red_line_crossed, target_prices,
+    Prices, balance_level, irb_after_unmatched_fill, quantities, red_line_crossed,
+    red_line_trigger_price, target_prices,
 )
 
 
@@ -34,6 +35,13 @@ def test_red_line_direction() -> None:
     assert red_line_crossed("BUY", Decimal("100"), Decimal("98.9"), Decimal("99"), Decimal("1"))
     assert red_line_crossed("SELL", Decimal("100"), Decimal("101"), Decimal("101.1"), Decimal("1"))
     assert not red_line_crossed("BUY", Decimal("100"), Decimal("99.5"), Decimal("100"), Decimal("1"))
+
+
+def test_red_line_trigger_price() -> None:
+    assert red_line_trigger_price("BUY", Decimal("100"), Decimal("1")) == Decimal("99")
+    assert red_line_trigger_price("SELL", Decimal("100"), Decimal("1")) == Decimal("101")
+    with pytest.raises(ValueError):
+        red_line_trigger_price("UNKNOWN", Decimal("100"), Decimal("1"))
 
 
 def test_irb_tracks_one_sided_red_line_cycles() -> None:

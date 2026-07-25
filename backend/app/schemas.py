@@ -56,12 +56,20 @@ class ActiveOrderRead(BaseModel):
     distance_pct: Decimal | None = None
 
 
+class RedLineRead(BaseModel):
+    filled_side: OrderSide
+    reference_price: Decimal
+    trigger_price: Decimal
+    distance_pct: Decimal | None = None
+
+
 class PairRuntime(BaseModel):
     pair: PairRead
     bid: Decimal | None = None
     ask: Decimal | None = None
     bid_order: ActiveOrderRead | None = None
     ask_order: ActiveOrderRead | None = None
+    red_line: RedLineRead | None = None
     quote_updated_at: datetime | None = None
     base_free: Decimal | None = None
     quote_free: Decimal | None = None

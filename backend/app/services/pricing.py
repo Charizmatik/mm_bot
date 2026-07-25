@@ -48,10 +48,17 @@ def quantities(lot_quote: Decimal, prices: Prices, precision: int) -> tuple[Deci
     )
 
 
-def red_line_crossed(side: str, fill_price: Decimal, bid: Decimal, ask: Decimal, red_line_pct: Decimal) -> bool:
+def red_line_trigger_price(side: str, fill_price: Decimal, red_line_pct: Decimal) -> Decimal:
     if side == "BUY":
-        return bid <= fill_price * (Decimal(1) - red_line_pct / HUNDRED)
-    return ask >= fill_price * (Decimal(1) + red_line_pct / HUNDRED)
+        return fill_price * (Decimal(1) - red_line_pct / HUNDRED)
+    if side == "SELL":
+        return fill_price * (Decimal(1) + red_line_pct / HUNDRED)
+    raise ValueError(f"unknown side: {side}")
+
+
+def red_line_crossed(side: str, fill_price: Decimal, bid: Decimal, ask: Decimal, red_line_pct: Decimal) -> bool:
+    trigger_price = red_line_trigger_price(side, fill_price, red_line_pct)
+    return bid <= trigger_price if side == "BUY" else ask >= trigger_price
 
 
 def irb_after_unmatched_fill(current_irb: int, filled_side: str) -> int:

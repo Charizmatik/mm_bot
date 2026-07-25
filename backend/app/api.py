@@ -17,10 +17,11 @@ from app.models import (
 from app.schemas import (
     ActiveOrderRead, AnalyticsPeriod, AnalyticsReport, EventPage, EventRead, FillRead, Health,
     ManualIrb, OrderPage, OrderRead, PairCreate, PairRead,
-    PairRuntime, PairUpdate,
+    PairRuntime, PairUpdate, RedLineRead,
     PairStatistics, ProfitBucket, Statistics,
     SymbolRead,
 )
+from app.services.pricing import red_line_trigger_price
 
 router = APIRouter(prefix="/api")
 _symbol_cache: tuple[list, datetime] | None = None
@@ -51,6 +52,24 @@ def order_distance_pct(side: OrderSide, market_price: Decimal | None, order_pric
         return None
     distance = market_price - order_price if side == OrderSide.BUY else order_price - market_price
     return max(distance, Decimal("0")) * Decimal("100") / market_price
+
+
+def red_line_values(
+    side: OrderSide,
+    reference_price: Decimal,
+    market_price: Decimal | None,
+    red_line_pct: Decimal,
+) -> tuple[Decimal, Decimal | None]:
+    """Return the engine's red-line trigger and the directional move still needed."""
+    trigger_price = red_line_trigger_price(side.value, reference_price, red_line_pct)
+    if market_price is None or market_price <= 0:
+        return trigger_price, None
+    distance = (
+        market_price - trigger_price
+        if side == OrderSide.BUY
+        else trigger_price - market_price
+    )
+    return trigger_price, max(distance, Decimal("0")) * Decimal("100") / market_price
 
 
 async def _exchange_symbols(request: Request) -> list:
@@ -102,13 +121,20 @@ async def list_pairs(request: Request, session: AsyncSession = Depends(get_sessi
             await request.app.state.engine.ensure_pair_runtime(pair)
         quote_item = request.app.state.engine.quotes.get(pair.symbol)
         balance_item = request.app.state.engine.pair_balances.get(pair.symbol)
-        active_orders = list((await session.scalars(
+        cycle_orders = list((await session.scalars(
             select(Order).join(TradeCycle).where(
                 TradeCycle.pair_id == pair.id,
                 TradeCycle.status == CycleStatus.OPEN,
-                Order.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_FILLED]),
+                Order.status.in_([
+                    OrderStatus.NEW, OrderStatus.PARTIALLY_FILLED, OrderStatus.FILLED,
+                ]),
             ).order_by(Order.created_at.desc())
         )).all())
+        active_orders = [
+            order for order in cycle_orders
+            if order.status in {OrderStatus.NEW, OrderStatus.PARTIALLY_FILLED}
+        ]
+        filled_orders = [order for order in cycle_orders if order.status == OrderStatus.FILLED]
         quote, quoted_at = quote_item if quote_item else (None, None)
         base_free, quote_free, balance_updated_at = balance_item if balance_item else (None, None, None)
         orders_by_side: dict[OrderSide, Order] = {}
@@ -116,6 +142,22 @@ async def list_pairs(request: Request, session: AsyncSession = Depends(get_sessi
             orders_by_side.setdefault(order.side, order)
         buy_order = orders_by_side.get(OrderSide.BUY)
         sell_order = orders_by_side.get(OrderSide.SELL)
+        red_line = None
+        if len(filled_orders) == 1:
+            winner = filled_orders[0]
+            market_price = (
+                quote.bid if quote and winner.side == OrderSide.BUY
+                else quote.ask if quote else None
+            )
+            trigger_price, distance_pct = red_line_values(
+                winner.side, winner.price, market_price, pair.red_line_pct
+            )
+            red_line = RedLineRead(
+                filled_side=winner.side,
+                reference_price=winner.price,
+                trigger_price=trigger_price,
+                distance_pct=distance_pct,
+            )
         result.append(PairRuntime(pair=PairRead.model_validate(pair), bid=quote.bid if quote else None,
                                   ask=quote.ask if quote else None,
                                   bid_order=(ActiveOrderRead(
@@ -130,6 +172,7 @@ async def list_pairs(request: Request, session: AsyncSession = Depends(get_sessi
                                           OrderSide.SELL, quote.ask if quote else None, sell_order.price
                                       ),
                                   ) if sell_order else None),
+                                  red_line=red_line,
                                   quote_updated_at=quoted_at,
                                   base_free=base_free, quote_free=quote_free,
                                   balance_updated_at=balance_updated_at,

@@ -3,7 +3,9 @@ from decimal import Decimal
 
 import pytest
 
-from app.api import _next_period, _period_start, order_distance_pct, reported_cycle_profit, stop_pair
+from app.api import (
+    _next_period, _period_start, order_distance_pct, red_line_values, reported_cycle_profit, stop_pair,
+)
 from app.models import CycleStatus, Event, OrderSide, PairConfig, PairStatus, TradeCycle
 from app.services.engine import describe_exception
 
@@ -41,6 +43,31 @@ def test_order_distance_pct_counts_down_to_execution_price(
 
 def test_order_distance_pct_is_unavailable_without_market_price() -> None:
     assert order_distance_pct(OrderSide.BUY, None, Decimal("99.5")) is None
+
+
+@pytest.mark.parametrize(("side", "market_price", "expected_trigger", "expected_distance"), [
+    (OrderSide.BUY, Decimal("99.5"), Decimal("99"), Decimal("0.5025125628140703517587939698")),
+    (OrderSide.SELL, Decimal("100.5"), Decimal("101"), Decimal("0.4975124378109452736318407960")),
+    (OrderSide.BUY, Decimal("98.9"), Decimal("99"), Decimal("0")),
+    (OrderSide.SELL, Decimal("101.1"), Decimal("101"), Decimal("0")),
+])
+def test_red_line_values_match_engine_direction(
+    side: OrderSide,
+    market_price: Decimal,
+    expected_trigger: Decimal,
+    expected_distance: Decimal,
+) -> None:
+    trigger, distance = red_line_values(side, Decimal("100"), market_price, Decimal("1"))
+    assert trigger == expected_trigger
+    assert distance == expected_distance
+
+
+def test_red_line_values_keep_trigger_without_market_price() -> None:
+    trigger, distance = red_line_values(
+        OrderSide.SELL, Decimal("63830.34"), None, Decimal("1")
+    )
+    assert trigger == Decimal("64468.6434")
+    assert distance is None
 
 
 @pytest.mark.asyncio
