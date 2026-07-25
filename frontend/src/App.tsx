@@ -1,5 +1,6 @@
 import { FormEvent, KeyboardEvent, useCallback, useEffect, useState } from 'react';
 import { api } from './api';
+import AnalyticsPage from './Analytics';
 import type { BotEvent, ExchangeSymbol, OrderDetails, PairForm, Runtime, Statistics } from './types';
 
 const initial: PairForm = {
@@ -36,10 +37,14 @@ function compactDecimal(value: string): string {
     .replace(/\.0+$/, '');
 }
 
-function App() {
+function Dashboard() {
   const [pairs, setPairs] = useState<Runtime[]>([]);
   const [events, setEvents] = useState<BotEvent[]>([]);
   const [orders, setOrders] = useState<OrderDetails[]>([]);
+  const [eventPage, setEventPage] = useState(1);
+  const [eventMeta, setEventMeta] = useState({total: 0, pages: 0});
+  const [orderPage, setOrderPage] = useState(1);
+  const [orderMeta, setOrderMeta] = useState({total: 0, pages: 0});
   const [orderPair, setOrderPair] = useState('all');
   const [stats, setStats] = useState<Statistics>({successful_trades: 0, unsuccessful_trades: 0,
     total_trades: 0, success_rate_pct: '0', by_quote_asset: [], pairs: []});
@@ -54,12 +59,14 @@ function App() {
   const refresh = useCallback(async () => {
     try {
       const [health, pairData, eventData, statsData, orderData] = await Promise.all([
-        api.health(), api.pairs(), api.events(), api.statistics(paperProfit), api.orders(),
+        api.health(), api.pairs(), api.events(eventPage), api.statistics(paperProfit),
+        api.orders(orderPage, orderPair),
       ]);
-      setDryRun(health.dry_run); setPairs(pairData); setEvents(eventData); setStats(statsData);
-      setOrders(orderData); setError('');
+      setDryRun(health.dry_run); setPairs(pairData); setEvents(eventData.items); setStats(statsData);
+      setEventMeta({total: eventData.total, pages: eventData.pages});
+      setOrders(orderData.items); setOrderMeta({total: orderData.total, pages: orderData.pages}); setError('');
     } catch (e) { setError((e as Error).message); }
-  }, [paperProfit]);
+  }, [paperProfit, eventPage, orderPage, orderPair]);
 
   useEffect(() => {
     refresh();
@@ -109,12 +116,13 @@ function App() {
   const totalVolumeUsdt = stats.by_quote_asset.reduce(
     (sum, bucket) => sum + Number(bucket.trading_volume_usdt), 0,
   );
-  const filteredOrders = orderPair === 'all' ? orders : orders.filter(order => order.pair_id === orderPair);
-
   return <main>
     <header>
       <div><span className="eyebrow">MEXC · SPOT</span><h1>Inventory Market Maker</h1></div>
-      <div className={`mode ${dryRun ? 'paper' : 'live'}`}><i />{dryRun ? 'DRY RUN' : 'LIVE TRADING'}</div>
+      <div className="header-actions">
+        <nav aria-label="Основна навігація"><a href="/" className="active">Панель</a><a href="/analytics">Аналітика</a></nav>
+        <div className={`mode ${dryRun ? 'paper' : 'live'}`}><i />{dryRun ? 'DRY RUN' : 'LIVE TRADING'}</div>
+      </div>
     </header>
 
     {error && <div className="error"><span>{error}</span><button onClick={() => setError('')}>×</button></div>}
@@ -197,19 +205,21 @@ function App() {
     </section>
 
     <section className="orders-section">
-      <div className="section-title"><h3>Ордери та виконання</h3><span>{filteredOrders.length} із {orders.length}</span></div>
+      <div className="section-title"><h3>Ордери та виконання</h3><span>{orderMeta.total} всього</span></div>
       <div className="order-toolbar"><label><span>Торгова пара</span><select value={orderPair}
-        onChange={event => setOrderPair(event.target.value)}><option value="all">Усі пари</option>
+        onChange={event => { setOrderPair(event.target.value); setOrderPage(1); }}><option value="all">Усі пари</option>
         {pairs.map(runtime => <option value={runtime.pair.id} key={runtime.pair.id}>{runtime.pair.symbol}</option>)}</select></label></div>
-      <div className="order-list">{filteredOrders.length === 0 ? <div className="empty">Ордерів ще немає.</div> :
-        filteredOrders.map(order => <OrderRow order={order} key={order.id} />)}</div>
+      <div className="order-list">{orders.length === 0 ? <div className="empty">Ордерів ще немає.</div> :
+        orders.map(order => <OrderRow order={order} key={order.id} />)}</div>
+      <Pagination page={orderPage} pages={orderMeta.pages} total={orderMeta.total} onChange={setOrderPage} />
     </section>
 
     <section className="events">
-      <div className="section-title"><h3>Журнал подій</h3><span>останні {events.length}</span></div>
+      <div className="section-title"><h3>Журнал подій</h3><span>{eventMeta.total} всього</span></div>
       <div className="event-list">{events.length === 0 ? <div className="empty">Подій поки немає.</div> : events.map(event =>
         <div className="event" key={event.id}><i className={event.level} /><time>{new Date(event.created_at).toLocaleString('uk-UA')}</time>
           <strong>{event.kind.replaceAll('_', ' ')}</strong><span>{event.message}</span></div>)}</div>
+      <Pagination page={eventPage} pages={eventMeta.pages} total={eventMeta.total} onChange={setEventPage} />
     </section>
   </main>;
 }
@@ -247,6 +257,24 @@ function OrderRow({order}: {order: OrderDetails}) {
 
 function Stat({label, value, tone=''}: {label:string; value:string; tone?:string}) {
   return <div className={`stat ${tone}`}><span>{label}</span><strong>{value}</strong></div>;
+}
+
+function Pagination({page, pages, total, onChange}: {
+  page: number; pages: number; total: number; onChange: (page: number) => void;
+}) {
+  if (pages <= 1) return null;
+  const visible = Array.from({length: pages}, (_, index) => index + 1)
+    .filter(value => value === 1 || value === pages || Math.abs(value - page) <= 1);
+  return <nav className="pagination" aria-label="Пагінація">
+    <button className="secondary" disabled={page === 1} onClick={() => onChange(page - 1)}>←</button>
+    {visible.map((value, index) => <span className="page-step" key={value}>
+      {index > 0 && value - visible[index - 1] > 1 && <span key={`gap-${value}`}>…</span>}
+      <button className={value === page ? 'primary' : 'secondary'}
+        aria-current={value === page ? 'page' : undefined} onClick={() => onChange(value)}>{value}</button>
+    </span>)}
+    <button className="secondary" disabled={page === pages} onClick={() => onChange(page + 1)}>→</button>
+    <small>{total} записів</small>
+  </nav>;
 }
 
 function SymbolPicker({value, onSelect}: {value:string; onSelect:(item:ExchangeSymbol)=>void}) {
@@ -356,6 +384,10 @@ function PairCard({runtime, busy, onAct, onEdit}: {
       onClick={() => onAct(p.id, p.enabled ? 'stop' : 'start')}>{p.enabled ? 'Зупинити' : 'Запустити'}</button>
       <button className="secondary" disabled={p.enabled || busy.startsWith(p.id)} onClick={() => onEdit(runtime)}>Редагувати</button></div>
   </article>;
+}
+
+function App() {
+  return window.location.pathname.startsWith('/analytics') ? <AnalyticsPage /> : <Dashboard />;
 }
 
 export default App;

@@ -84,6 +84,14 @@ class EventRead(BaseModel):
     created_at: datetime
 
 
+class EventPage(BaseModel):
+    items: list[EventRead]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+
+
 class Health(BaseModel):
     status: str
     dry_run: bool
@@ -150,6 +158,33 @@ class OrderRead(BaseModel):
     created_at: datetime
     updated_at: datetime
     fills: list[FillRead]
+
+
+class OrderPage(BaseModel):
+    items: list[OrderRead]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+
+
+class AnalyticsPeriod(BaseModel):
+    period_start: datetime
+    period_end: datetime
+    successful_trades: int
+    unsuccessful_trades: int
+    total_trades: int
+    success_rate_pct: Decimal
+    trading_volume_usdt: Decimal
+    by_quote_asset: list[ProfitBucket]
+
+
+class AnalyticsReport(BaseModel):
+    date_from: datetime | None
+    date_to: datetime
+    granularity: str
+    totals: Statistics
+    periods: list[AnalyticsPeriod]
 
 
 class SymbolRead(BaseModel):

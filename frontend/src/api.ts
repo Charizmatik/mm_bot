@@ -1,4 +1,6 @@
-import type { BotEvent, ExchangeSymbol, OrderDetails, Pair, PairForm, Runtime, Statistics } from './types';
+import type {
+  AnalyticsReport, BotEvent, ExchangeSymbol, OrderDetails, Page, Pair, PairForm, Runtime, Statistics,
+} from './types';
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api${path}`, {
@@ -15,9 +17,21 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: () => call<{status: string; dry_run: boolean}>('/health'),
   pairs: () => call<Runtime[]>('/pairs'),
-  events: () => call<BotEvent[]>('/events?limit=80'),
-  orders: () => call<OrderDetails[]>('/orders?limit=200'),
+  events: (page = 1) => call<Page<BotEvent>>(`/events?page=${page}&page_size=10`),
+  orders: (page = 1, pairId = 'all') => call<Page<OrderDetails>>(
+    `/orders?page=${page}&page_size=10${pairId === 'all' ? '' : `&pair_id=${encodeURIComponent(pairId)}`}`,
+  ),
   statistics: (paperProfit = false) => call<Statistics>(`/statistics?paper_profit=${paperProfit}`),
+  analytics: (params: {
+    dateFrom?: string; dateTo?: string; granularity: string; pairId?: string; paperProfit?: boolean;
+  }) => {
+    const query = new URLSearchParams({granularity: params.granularity});
+    if (params.dateFrom) query.set('date_from', params.dateFrom);
+    if (params.dateTo) query.set('date_to', params.dateTo);
+    if (params.pairId && params.pairId !== 'all') query.set('pair_id', params.pairId);
+    if (params.paperProfit) query.set('paper_profit', 'true');
+    return call<AnalyticsReport>(`/analytics?${query}`);
+  },
   symbols: (query: string) => call<ExchangeSymbol[]>(`/symbols?q=${encodeURIComponent(query)}&limit=30`),
   create: (form: PairForm) => call<Pair>('/pairs', { method: 'POST', body: JSON.stringify(form) }),
   update: (id: string, form: PairForm) => call<Pair>(`/pairs/${id}`, {

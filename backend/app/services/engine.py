@@ -33,6 +33,22 @@ OPEN_ORDER_STATUSES = {OrderStatus.NEW, OrderStatus.PARTIALLY_FILLED}
 logger = logging.getLogger(__name__)
 
 
+def describe_exception(exc: BaseException) -> str:
+    """Return a useful one-line diagnostic even for exceptions with no message."""
+    parts: list[str] = []
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        name = type(current).__name__
+        detail = str(current).strip()
+        if not detail:
+            detail = f"no message; args={current.args!r}"
+        parts.append(f"{name}: {detail}")
+        current = current.__cause__ or current.__context__
+    return " <- caused by ".join(parts)[:1000]
+
+
 class MarketMakerEngine:
     def __init__(self, exchange: Exchange, settings: Settings) -> None:
         self.exchange = exchange
@@ -139,7 +155,7 @@ class MarketMakerEngine:
                 raise
             except Exception:
                 # A top-level failure must not permanently kill the supervisor.
-                pass
+                logger.exception("Unhandled engine supervisor error")
             await asyncio.sleep(self.settings.engine_tick_seconds)
 
     async def _process_safe(self, pair_id: uuid.UUID) -> None:
@@ -152,12 +168,19 @@ class MarketMakerEngine:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                diagnostic = describe_exception(exc)
+                logger.exception("Engine error while processing pair %s: %s", pair_id, diagnostic)
                 async with SessionLocal() as session:
                     pair = await session.get(PairConfig, pair_id)
                     if pair:
+                        changed = pair.last_error != diagnostic
                         pair.status = PairStatus.ERROR
-                        pair.last_error = str(exc)[:1000]
-                        session.add(Event(pair_id=pair.id, level="error", kind="engine_error", message=pair.last_error))
+                        pair.last_error = diagnostic
+                        if changed:
+                            session.add(Event(
+                                pair_id=pair.id, level="error",
+                                kind="engine_error", message=diagnostic,
+                            ))
                         await session.commit()
 
     async def _process(self, pair_id: uuid.UUID) -> None:

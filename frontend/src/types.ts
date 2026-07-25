@@ -22,6 +22,10 @@ export type BotEvent = {
   id: string; pair_id: string | null; level: string; kind: string; message: string; created_at: string;
 };
 
+export type Page<T> = {
+  items: T[]; total: number; page: number; page_size: number; pages: number;
+};
+
 export type PairForm = {
   symbol: string; base_asset: string; quote_asset: string; lot_quote: string; spread_pct: string;
   base_balance_trigger: string; base_balance_limit: string;
@@ -43,6 +47,17 @@ export type PairStatistics = ProfitBucket & {
 export type Statistics = {
   successful_trades: number; unsuccessful_trades: number; total_trades: number;
   success_rate_pct: string; by_quote_asset: ProfitBucket[]; pairs: PairStatistics[];
+};
+
+export type AnalyticsPeriod = {
+  period_start: string; period_end: string;
+  successful_trades: number; unsuccessful_trades: number; total_trades: number;
+  success_rate_pct: string; trading_volume_usdt: string; by_quote_asset: ProfitBucket[];
+};
+
+export type AnalyticsReport = {
+  date_from: string | null; date_to: string; granularity: 'day' | 'week' | 'month';
+  totals: Statistics; periods: AnalyticsPeriod[];
 };
 
 export type ExchangeSymbol = {

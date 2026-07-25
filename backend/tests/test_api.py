@@ -3,8 +3,9 @@ from decimal import Decimal
 
 import pytest
 
-from app.api import order_distance_pct, reported_cycle_profit, stop_pair
+from app.api import _next_period, _period_start, order_distance_pct, reported_cycle_profit, stop_pair
 from app.models import CycleStatus, Event, OrderSide, PairConfig, PairStatus, TradeCycle
+from app.services.engine import describe_exception
 
 
 class FakeSession:
@@ -116,3 +117,28 @@ def test_paper_profit_keeps_profitable_cycle_result() -> None:
         Decimal("0.1"),
         Decimal("1.4"),
     )
+
+
+def test_engine_error_without_message_is_still_actionable() -> None:
+    assert describe_exception(TimeoutError()) == "TimeoutError: no message; args=()"
+
+
+def test_engine_error_includes_cause_chain() -> None:
+    try:
+        try:
+            raise ConnectionError("exchange disconnected")
+        except ConnectionError as cause:
+            raise RuntimeError("order refresh failed") from cause
+    except RuntimeError as error:
+        assert describe_exception(error) == (
+            "RuntimeError: order refresh failed <- caused by "
+            "ConnectionError: exchange disconnected"
+        )
+
+
+def test_month_period_boundaries() -> None:
+    from datetime import datetime, timezone
+
+    start = _period_start(datetime(2026, 12, 25, 12, tzinfo=timezone.utc), "month")
+    assert start == datetime(2026, 12, 1, tzinfo=timezone.utc)
+    assert _next_period(start, "month") == datetime(2027, 1, 1, tzinfo=timezone.utc)

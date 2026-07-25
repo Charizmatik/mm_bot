@@ -4,8 +4,8 @@ import contextlib
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -15,7 +15,8 @@ from app.models import (
     CycleStatus, Event, Order, OrderSide, OrderStatus, PairConfig, PairStatus, TradeCycle,
 )
 from app.schemas import (
-    ActiveOrderRead, EventRead, FillRead, Health, ManualIrb, OrderRead, PairCreate, PairRead,
+    ActiveOrderRead, AnalyticsPeriod, AnalyticsReport, EventPage, EventRead, FillRead, Health,
+    ManualIrb, OrderPage, OrderRead, PairCreate, PairRead,
     PairRuntime, PairUpdate,
     PairStatistics, ProfitBucket, Statistics,
     SymbolRead,
@@ -227,66 +228,78 @@ async def set_irb(pair_id: uuid.UUID, payload: ManualIrb, session: AsyncSession 
     return pair
 
 
-@router.get("/events", response_model=list[EventRead])
-async def list_events(pair_id: uuid.UUID | None = None, limit: int = 100,
-                      session: AsyncSession = Depends(get_session)) -> list[Event]:
-    query = select(Event).order_by(Event.created_at.desc()).limit(min(max(limit, 1), 500))
-    if pair_id:
-        query = query.where(Event.pair_id == pair_id)
-    return list((await session.scalars(query)).all())
+@router.get("/events", response_model=EventPage)
+async def list_events(
+    pair_id: uuid.UUID | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
+    session: AsyncSession = Depends(get_session),
+) -> EventPage:
+    filters = [Event.pair_id == pair_id] if pair_id else []
+    total = int(await session.scalar(select(func.count(Event.id)).where(*filters)) or 0)
+    query = (
+        select(Event)
+        .where(*filters)
+        .order_by(Event.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    items = list((await session.scalars(query)).all())
+    return EventPage(
+        items=items, total=total, page=page, page_size=page_size,
+        pages=(total + page_size - 1) // page_size,
+    )
 
 
-@router.get("/orders", response_model=list[OrderRead])
+def _order_read(order: Order, cycle: TradeCycle, pair: PairConfig) -> OrderRead:
+    execution_pct = (
+        order.executed_quantity * Decimal("100") / order.quantity
+        if order.quantity else Decimal("0")
+    )
+    return OrderRead(
+        id=order.id, cycle_id=cycle.id, pair_id=pair.id, symbol=pair.symbol,
+        base_asset=pair.base_asset, quote_asset=pair.quote_asset,
+        cycle_status=cycle.status, exchange_order_id=order.exchange_order_id,
+        client_order_id=order.client_order_id, side=order.side, status=order.status,
+        price=order.price, quantity=order.quantity,
+        executed_quantity=order.executed_quantity,
+        quote_value=order.price * order.quantity, execution_pct=execution_pct,
+        created_at=order.created_at, updated_at=order.updated_at,
+        fills=[FillRead.model_validate(fill) for fill in order.fills],
+    )
+
+
+@router.get("/orders", response_model=OrderPage)
 async def list_orders(
     pair_id: uuid.UUID | None = None,
-    limit: int = 200,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
     session: AsyncSession = Depends(get_session),
-) -> list[OrderRead]:
+) -> OrderPage:
+    filters = [TradeCycle.pair_id == pair_id] if pair_id else []
+    total = int(await session.scalar(
+        select(func.count(Order.id)).join(TradeCycle, Order.cycle_id == TradeCycle.id).where(*filters)
+    ) or 0)
     query = (
         select(Order, TradeCycle, PairConfig)
         .join(TradeCycle, Order.cycle_id == TradeCycle.id)
         .join(PairConfig, TradeCycle.pair_id == PairConfig.id)
         .options(selectinload(Order.fills))
+        .where(*filters)
         .order_by(Order.created_at.desc())
-        .limit(min(max(limit, 1), 500))
+        .offset((page - 1) * page_size)
+        .limit(page_size)
     )
-    if pair_id:
-        query = query.where(TradeCycle.pair_id == pair_id)
-
-    result = []
-    for order, cycle, pair in (await session.execute(query)).all():
-        execution_pct = (
-            order.executed_quantity * Decimal("100") / order.quantity
-            if order.quantity else Decimal("0")
-        )
-        result.append(OrderRead(
-            id=order.id, cycle_id=cycle.id, pair_id=pair.id, symbol=pair.symbol,
-            base_asset=pair.base_asset, quote_asset=pair.quote_asset,
-            cycle_status=cycle.status, exchange_order_id=order.exchange_order_id,
-            client_order_id=order.client_order_id, side=order.side, status=order.status,
-            price=order.price, quantity=order.quantity,
-            executed_quantity=order.executed_quantity,
-            quote_value=order.price * order.quantity, execution_pct=execution_pct,
-            created_at=order.created_at, updated_at=order.updated_at,
-            fills=[FillRead.model_validate(fill) for fill in order.fills],
-        ))
-    return result
+    items = [_order_read(order, cycle, pair) for order, cycle, pair in (await session.execute(query)).all()]
+    return OrderPage(
+        items=items, total=total, page=page, page_size=page_size,
+        pages=(total + page_size - 1) // page_size,
+    )
 
 
-@router.get("/statistics", response_model=Statistics)
-async def statistics(
-    paper_profit: bool = False,
-    session: AsyncSession = Depends(get_session),
+def _summarize_cycles(
+    rows: list[tuple[TradeCycle, PairConfig]], paper_profit: bool
 ) -> Statistics:
-    rows = (
-        await session.execute(
-            select(TradeCycle, PairConfig)
-            .join(PairConfig, TradeCycle.pair_id == PairConfig.id)
-            .options(selectinload(TradeCycle.orders).selectinload(Order.fills))
-            .where(TradeCycle.status.in_([CycleStatus.PROFITABLE, CycleStatus.RED_LINE]))
-        )
-    ).all()
-
     quote_totals: dict[str, dict[str, Decimal]] = {}
     pair_totals: dict[uuid.UUID, dict] = {}
     successful = unsuccessful = 0
@@ -350,4 +363,102 @@ async def statistics(
             )
             for pair_id, value in pair_totals.items()
         ],
+    )
+
+
+def _period_start(value: datetime, granularity: str) -> datetime:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    value = value.astimezone(timezone.utc)
+    if granularity == "day":
+        return value.replace(hour=0, minute=0, second=0, microsecond=0)
+    if granularity == "week":
+        day = value.replace(hour=0, minute=0, second=0, microsecond=0)
+        return day - timedelta(days=day.weekday())
+    return value.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def _next_period(value: datetime, granularity: str) -> datetime:
+    if granularity == "day":
+        return value + timedelta(days=1)
+    if granularity == "week":
+        return value + timedelta(days=7)
+    return value.replace(
+        year=value.year + int(value.month == 12),
+        month=1 if value.month == 12 else value.month + 1,
+    )
+
+
+@router.get("/statistics", response_model=Statistics)
+async def statistics(
+    paper_profit: bool = False,
+    session: AsyncSession = Depends(get_session),
+) -> Statistics:
+    rows = (
+        await session.execute(
+            select(TradeCycle, PairConfig)
+            .join(PairConfig, TradeCycle.pair_id == PairConfig.id)
+            .options(selectinload(TradeCycle.orders).selectinload(Order.fills))
+            .where(TradeCycle.status.in_([CycleStatus.PROFITABLE, CycleStatus.RED_LINE]))
+        )
+    ).all()
+    return _summarize_cycles(list(rows), paper_profit)
+
+
+@router.get("/analytics", response_model=AnalyticsReport)
+async def analytics(
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    granularity: str = Query(default="day", pattern="^(day|week|month)$"),
+    pair_id: uuid.UUID | None = None,
+    paper_profit: bool = False,
+    session: AsyncSession = Depends(get_session),
+) -> AnalyticsReport:
+    end = date_to or datetime.now(timezone.utc)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=timezone.utc)
+    filters = [
+        TradeCycle.status.in_([CycleStatus.PROFITABLE, CycleStatus.RED_LINE]),
+        TradeCycle.closed_at.is_not(None),
+        TradeCycle.closed_at <= end,
+    ]
+    if date_from:
+        if date_from.tzinfo is None:
+            date_from = date_from.replace(tzinfo=timezone.utc)
+        if date_from > end:
+            raise HTTPException(422, "date_from must be earlier than date_to")
+        filters.append(TradeCycle.closed_at >= date_from)
+    if pair_id:
+        filters.append(TradeCycle.pair_id == pair_id)
+    rows = list((
+        await session.execute(
+            select(TradeCycle, PairConfig)
+            .join(PairConfig, TradeCycle.pair_id == PairConfig.id)
+            .options(selectinload(TradeCycle.orders).selectinload(Order.fills))
+            .where(*filters)
+            .order_by(TradeCycle.closed_at)
+        )
+    ).all())
+
+    grouped: dict[datetime, list[tuple[TradeCycle, PairConfig]]] = {}
+    for cycle, pair in rows:
+        grouped.setdefault(_period_start(cycle.closed_at, granularity), []).append((cycle, pair))
+    periods = []
+    for period_start, period_rows in sorted(grouped.items()):
+        summary = _summarize_cycles(period_rows, paper_profit)
+        periods.append(AnalyticsPeriod(
+            period_start=period_start,
+            period_end=_next_period(period_start, granularity),
+            successful_trades=summary.successful_trades,
+            unsuccessful_trades=summary.unsuccessful_trades,
+            total_trades=summary.total_trades,
+            success_rate_pct=summary.success_rate_pct,
+            trading_volume_usdt=sum(
+                (bucket.trading_volume_usdt for bucket in summary.by_quote_asset), Decimal("0")
+            ),
+            by_quote_asset=summary.by_quote_asset,
+        ))
+    return AnalyticsReport(
+        date_from=date_from, date_to=end, granularity=granularity,
+        totals=_summarize_cycles(rows, paper_profit), periods=periods,
     )
