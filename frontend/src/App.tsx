@@ -103,6 +103,26 @@ function Dashboard() {
     window.scrollTo({top: 0, behavior: 'smooth'});
   }
 
+  async function prepareEdit(runtime: Runtime) {
+    const pair = runtime.pair;
+    if (!pair.enabled) {
+      openEdit(runtime);
+      return;
+    }
+    if (pair.status !== 'error') return;
+
+    setBusy(`${pair.id}prepare-edit`);
+    try {
+      await api.stop(pair.id);
+      openEdit(runtime);
+      await refresh();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy('');
+    }
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault(); setBusy(editingId ? `${editingId}edit` : 'create');
     try {
@@ -125,7 +145,8 @@ function Dashboard() {
       </div>
     </header>
 
-    {error && <div className="error"><span>{error}</span><button onClick={() => setError('')}>×</button></div>}
+    {error && <div className="app-error" role="alert"><span>{error}</span>
+      <button aria-label="Закрити повідомлення про помилку" onClick={() => setError('')}>×</button></div>}
 
     <section className="intro">
       <div><p className="kicker">Панель стратегії</p><h2>Ліквідність під контролем.</h2>
@@ -201,7 +222,7 @@ function Dashboard() {
       <div className="section-title"><h3>Торгові пари</h3><span>{pairs.length} конфігурацій</span></div>
       {pairs.length === 0 ? <div className="empty">Ще немає торгових пар. Додайте першу конфігурацію.</div> :
         <div className="pair-grid">{pairs.map(runtime => <PairCard key={runtime.pair.id} runtime={runtime}
-          busy={busy} onAct={act} onEdit={openEdit} />)}</div>}
+          busy={busy} onAct={act} onEdit={prepareEdit} />)}</div>}
     </section>
 
     <section className="orders-section">
@@ -334,7 +355,8 @@ function Field({label, value, onChange, type='text', readOnly=false}: {label: st
 }
 
 function PairCard({runtime, busy, onAct, onEdit}: {
-  runtime: Runtime; busy: string; onAct: (id:string, a:'start'|'stop')=>void; onEdit:(r:Runtime)=>void;
+  runtime: Runtime; busy: string; onAct: (id:string, a:'start'|'stop')=>void;
+  onEdit:(r:Runtime)=>void | Promise<void>;
 }) {
   const p = runtime.pair;
   const baseWarning = runtime.base_free !== null && Number(runtime.base_free) <= Number(p.base_balance_trigger);
@@ -349,7 +371,7 @@ function PairCard({runtime, busy, onAct, onEdit}: {
     ? baseValue / portfolioValue * 100 : null;
   const quoteShare = portfolioValue !== null && portfolioValue > 0 && quoteValue !== null
     ? quoteValue / portfolioValue * 100 : null;
-  return <article className={`pair-card ${p.status}`}>
+  return <article className={`pair-card status-${p.status}`}>
     <div className="pair-head"><div><span className="exchange">{p.exchange}</span><h3>{p.base_asset}<em>/{p.quote_asset}</em></h3></div>
       <span className="status"><i />{labels[p.status] || p.status}</span></div>
     <div className="quote"><div><span>BID</span><strong>{formatNumber(runtime.bid, p.price_precision, true)}</strong>
@@ -389,7 +411,8 @@ function PairCard({runtime, busy, onAct, onEdit}: {
     {p.last_error && <p className="pair-error">{p.last_error}</p>}
     <div className="actions"><button className={p.enabled ? 'danger' : 'primary'} disabled={busy.startsWith(p.id)}
       onClick={() => onAct(p.id, p.enabled ? 'stop' : 'start')}>{p.enabled ? 'Зупинити' : 'Запустити'}</button>
-      <button className="secondary" disabled={p.enabled || busy.startsWith(p.id)} onClick={() => onEdit(runtime)}>Редагувати</button></div>
+      <button className="secondary" disabled={(p.enabled && p.status !== 'error') || busy.startsWith(p.id)}
+        onClick={() => onEdit(runtime)}>{p.status === 'error' ? 'Виправити' : 'Редагувати'}</button></div>
   </article>;
 }
 
