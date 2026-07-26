@@ -13,6 +13,8 @@ export type Runtime = {
   bid_order: ActiveOrder | null; ask_order: ActiveOrder | null;
   red_line: RedLine | null;
   base_free: string | null; quote_free: string | null; balance_updated_at: string | null; open_orders: number;
+  base_trigger_price: string | null; base_limit_price: string | null;
+  quote_trigger_price: string | null; quote_limit_price: string | null;
   active_order_pairs: number; retiring_order_pairs: number;
   order_pairs: RuntimeOrderPair[];
 };

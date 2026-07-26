@@ -91,13 +91,18 @@ th { color:#697693; font:500 10px DM Mono; text-transform:uppercase; } tbody tr:
 .balance-grid span,.balance-grid small { display:block; color:#63708e; font-size:10px; }.balance-grid strong { display:block; margin:5px 0; font:500 14px DM Mono; }
 .balance-grid .valuation { display:flex; justify-content:space-between; gap:8px; margin:7px 0; color:#8793b0; font:10px DM Mono; }.balance-grid .valuation b { color:#c1c8da; font-weight:500; }
 .balance-grid .warn { border-color:#71582a; }.balance-grid .warn strong { color:#f5b942; }
+.balance-thresholds { display:grid; gap:7px; margin-top:10px; padding-top:9px; border-top:1px solid #202941; }
+.balance-thresholds>div { display:flex; justify-content:space-between; align-items:center; gap:8px; }
+.balance-thresholds span { color:#687694; font-size:9px; }.balance-thresholds b { color:#b8c2d9; font:500 9px DM Mono; text-align:right; white-space:nowrap; }
+.balance-grid .warn .balance-thresholds b { color:#f5c968; }
+.projection-note { margin:-12px 0 19px; color:#586681; font-size:9px; line-height:1.45; }
 .allocation { display:flex; height:4px; margin:-13px 0 21px; overflow:hidden; border-radius:4px; background:#29334e; }.allocation i { background:#635bff; }.allocation span { flex:1; background:#42d392; }
 dl { display:grid; grid-template-columns:repeat(3,1fr); gap:16px 10px; margin:0 0 23px; } dl div { min-width:0; } dt { color:#606c89; font-size:10px; text-transform:uppercase; } dd { margin:4px 0 0; font:12px DM Mono; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .actions { display:flex; gap:9px; border-top:1px solid #222a40; padding-top:19px; }.actions button:first-child { flex:1; }.pair-error { color:#ff8d96; font-size:12px; overflow-wrap:anywhere; white-space:pre-wrap; }
 .pair-card.compact .quote { display:none; }
 .pair-card.compact .irb-row { margin:17px 0 12px; }
 .pair-card.compact .balance-grid { margin-top:0; }
-.pair-card.compact .balance-grid small,.pair-card.compact .allocation { display:none; }
+.pair-card.compact .allocation { display:none; }
 .pair-card.compact .pair-metrics { grid-template-columns:repeat(3,1fr); margin-bottom:19px; padding-top:17px; border-top:1px solid #222a40; }
 .pair-card.compact .pair-metrics>div:nth-child(3),.pair-card.compact .pair-metrics>div:nth-child(7) { display:none; }
 .pair-card.compact .actions { padding-top:0; border-top:0; }

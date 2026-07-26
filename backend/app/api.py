@@ -21,7 +21,7 @@ from app.schemas import (
     PairStatistics, ProfitBucket, RuntimeOrderPairRead, RuntimeOrderRead, Statistics,
     SymbolRead, maximum_order_pairs,
 )
-from app.services.pricing import red_line_trigger_price
+from app.services.pricing import estimated_balance_threshold_price, red_line_trigger_price
 
 router = APIRouter(prefix="/api")
 _symbol_cache: tuple[list, datetime] | None = None
@@ -180,6 +180,42 @@ async def list_pairs(request: Request, session: AsyncSession = Depends(get_sessi
         ]
         quote, quoted_at = quote_item if quote_item else (None, None)
         base_free, quote_free, balance_updated_at = balance_item if balance_item else (None, None, None)
+        market_price = (quote.bid + quote.ask) / Decimal("2") if quote else None
+        projection_args = dict(
+            market_price=market_price,
+            lot_quote=pair.lot_quote,
+            order_pair_count=pair.order_pair_count,
+            spread_pct=pair.spread_pct,
+            red_line_pct=pair.red_line_pct,
+        ) if market_price is not None else None
+        base_trigger_price = (
+            estimated_balance_threshold_price(
+                side="SELL", balance=base_free,
+                threshold=pair.base_balance_trigger, **projection_args,
+            )
+            if base_free is not None and projection_args else None
+        )
+        base_limit_price = (
+            estimated_balance_threshold_price(
+                side="SELL", balance=base_free,
+                threshold=pair.base_balance_limit, **projection_args,
+            )
+            if base_free is not None and projection_args else None
+        )
+        quote_trigger_price = (
+            estimated_balance_threshold_price(
+                side="BUY", balance=quote_free,
+                threshold=pair.quote_balance_trigger, **projection_args,
+            )
+            if quote_free is not None and projection_args else None
+        )
+        quote_limit_price = (
+            estimated_balance_threshold_price(
+                side="BUY", balance=quote_free,
+                threshold=pair.quote_balance_limit, **projection_args,
+            )
+            if quote_free is not None and projection_args else None
+        )
         buys = [order for order in active_orders if order.side == OrderSide.BUY]
         sells = [order for order in active_orders if order.side == OrderSide.SELL]
         buy_order = max(buys, key=lambda order: order.price, default=None)
@@ -265,6 +301,10 @@ async def list_pairs(request: Request, session: AsyncSession = Depends(get_sessi
                                   red_line=red_line,
                                   quote_updated_at=quoted_at,
                                   base_free=base_free, quote_free=quote_free,
+                                  base_trigger_price=base_trigger_price,
+                                  base_limit_price=base_limit_price,
+                                  quote_trigger_price=quote_trigger_price,
+                                  quote_limit_price=quote_limit_price,
                                   balance_updated_at=balance_updated_at,
                                   open_orders=len(active_orders),
                                   active_order_pairs=sum(not cycle.retiring for cycle in cycles),

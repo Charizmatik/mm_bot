@@ -381,6 +381,19 @@ function Field({label, value, onChange, type='text', readOnly=false}: {label: st
     readOnly={readOnly} className={readOnly ? 'readonly' : ''} onChange={e => onChange?.(e.target.value)} /></label>;
 }
 
+function BalanceThresholds({asset, quoteAsset, trigger, limit, triggerPrice, limitPrice, valuePrecision, pricePrecision, direction}: {
+  asset: string; quoteAsset: string; trigger: string; limit: string;
+  triggerPrice: string | null; limitPrice: string | null;
+  valuePrecision: number; pricePrecision: number; direction: '↑' | '↓';
+}) {
+  return <div className="balance-thresholds" title="Сценарна оцінка за поточним балансом, лотом, кількістю пар ордерів, спредом і Red line">
+    <div><span>Тригер · {formatNumber(trigger, valuePrecision)} {asset}</span>
+      <b>≈ {formatNumber(triggerPrice, pricePrecision, true)} {quoteAsset} {direction}</b></div>
+    <div><span>Ліміт · {formatNumber(limit, valuePrecision)} {asset}</span>
+      <b>≈ {formatNumber(limitPrice, pricePrecision, true)} {quoteAsset} {direction}</b></div>
+  </div>;
+}
+
 function RuntimeOrderCard({order, pair}: {order: RuntimeOrder; pair: Pair}) {
   const open = order.status === 'NEW' || order.status === 'PARTIALLY_FILLED';
   const remaining = Math.max(Number(order.quantity) - Number(order.executed_quantity), 0);
@@ -481,15 +494,22 @@ function PairCard({runtime, detailed, busy, onAct, onEdit, onPairCount}: {
         {baseValue !== null && <div className="valuation">≈ {formatNumber(baseValue, p.price_precision)} {p.quote_asset}
           {baseShare !== null && <b>{formatNumber(baseShare, 1)}%</b>}</div>
         }
-        <small>trigger {formatNumber(p.base_balance_trigger, p.quantity_precision)} · limit {formatNumber(p.base_balance_limit, p.quantity_precision)}</small></div>
+        <BalanceThresholds asset={p.base_asset} quoteAsset={p.quote_asset}
+          trigger={p.base_balance_trigger} limit={p.base_balance_limit}
+          triggerPrice={runtime.base_trigger_price} limitPrice={runtime.base_limit_price}
+          valuePrecision={p.quantity_precision} pricePrecision={p.price_precision} direction="↑" /></div>
       <div className={quoteWarning ? 'warn' : ''}><span>Баланс {p.quote_asset}</span><strong>{formatNumber(runtime.quote_free, p.price_precision)}</strong>
         {quoteValue !== null && <div className="valuation">≈ {formatNumber(quoteValue, p.price_precision)} {p.quote_asset}
           {quoteShare !== null && <b>{formatNumber(quoteShare, 1)}%</b>}</div>
         }
-        <small>trigger {formatNumber(p.quote_balance_trigger, p.price_precision)} · limit {formatNumber(p.quote_balance_limit, p.price_precision)}</small></div>
+        <BalanceThresholds asset={p.quote_asset} quoteAsset={p.quote_asset}
+          trigger={p.quote_balance_trigger} limit={p.quote_balance_limit}
+          triggerPrice={runtime.quote_trigger_price} limitPrice={runtime.quote_limit_price}
+          valuePrecision={p.price_precision} pricePrecision={p.price_precision} direction="↓" /></div>
     </div>
     {baseShare !== null && quoteShare !== null && <div className="allocation" aria-label={`Розподіл балансу: ${p.base_asset} ${formatNumber(baseShare, 1)}%, ${p.quote_asset} ${formatNumber(quoteShare, 1)}%`}>
       <i style={{width: `${baseShare}%`}} /><span /></div>}
+    <p className="projection-note">≈ Орієнтовний сценарій за лотом, {p.order_pair_count} парами ордерів і Red line {formatNumber(p.red_line_pct, 6)}%.</p>
     <dl className="pair-metrics"><div><dt>Лот</dt><dd>{formatNumber(p.lot_quote, p.price_precision)} {p.quote_asset}</dd></div><div><dt>Спред</dt><dd>{formatNumber(p.spread_pct, 6)}%</dd></div>
       <div><dt>Зміщення</dt><dd>{formatNumber(p.order_offset_pct, 6)}%</dd></div><div><dt>Red line</dt><dd>{formatNumber(p.red_line_pct, 6)}%</dd></div>
       <div><dt>Ордери</dt><dd>{runtime.open_orders}</dd></div><div><dt>Пари</dt><dd>{p.order_pair_count} / {maximumPairs}</dd></div>

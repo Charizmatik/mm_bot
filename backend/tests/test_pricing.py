@@ -3,8 +3,9 @@ from decimal import Decimal
 import pytest
 
 from app.services.pricing import (
-    Prices, adjacent_prices, balance_level, prices_are_marketable, quantities,
-    red_line_crossed, red_line_trigger_price, target_prices,
+    Prices, adjacent_prices, balance_level, estimated_balance_threshold_price,
+    prices_are_marketable, quantities, red_line_crossed, red_line_trigger_price,
+    target_prices,
 )
 
 
@@ -62,3 +63,30 @@ def test_fixed_balance_levels() -> None:
 def test_balance_trigger_must_be_above_limit() -> None:
     with pytest.raises(ValueError):
         balance_level(Decimal("10"), Decimal("5"), Decimal("5"))
+
+
+def test_quote_threshold_projection_groups_buy_cycles_by_order_pair_count() -> None:
+    result = estimated_balance_threshold_price(
+        side="BUY", market_price=Decimal("100"), balance=Decimal("1000"),
+        threshold=Decimal("700"), lot_quote=Decimal("100"), order_pair_count=2,
+        spread_pct=Decimal("0"), red_line_pct=Decimal("10"),
+    )
+    assert result == Decimal("81.00")
+
+
+def test_base_threshold_projection_uses_sell_quantity_at_each_wave() -> None:
+    result = estimated_balance_threshold_price(
+        side="SELL", market_price=Decimal("100"), balance=Decimal("5"),
+        threshold=Decimal("3"), lot_quote=Decimal("100"), order_pair_count=2,
+        spread_pct=Decimal("0"), red_line_pct=Decimal("10"),
+    )
+    assert result == Decimal("110.0")
+
+
+def test_threshold_projection_returns_current_price_when_already_reached() -> None:
+    result = estimated_balance_threshold_price(
+        side="BUY", market_price=Decimal("100"), balance=Decimal("400"),
+        threshold=Decimal("500"), lot_quote=Decimal("100"), order_pair_count=2,
+        spread_pct=Decimal("0.15"), red_line_pct=Decimal("1"),
+    )
+    assert result == Decimal("100")

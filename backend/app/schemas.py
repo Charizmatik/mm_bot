@@ -109,6 +109,10 @@ class PairRuntime(BaseModel):
     quote_updated_at: datetime | None = None
     base_free: Decimal | None = None
     quote_free: Decimal | None = None
+    base_trigger_price: Decimal | None = None
+    base_limit_price: Decimal | None = None
+    quote_trigger_price: Decimal | None = None
+    quote_limit_price: Decimal | None = None
     balance_updated_at: datetime | None = None
     open_orders: int = 0
     active_order_pairs: int = 0

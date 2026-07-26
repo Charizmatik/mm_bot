@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_CEILING, ROUND_DOWN
 
 
 HUNDRED = Decimal("100")
@@ -91,3 +91,64 @@ def balance_level(value: Decimal, trigger: Decimal, limit: Decimal) -> str:
     if value <= trigger:
         return "trigger"
     return "ok"
+
+
+def estimated_balance_threshold_price(
+    *,
+    side: str,
+    market_price: Decimal,
+    balance: Decimal,
+    threshold: Decimal,
+    lot_quote: Decimal,
+    order_pair_count: int,
+    spread_pct: Decimal,
+    red_line_pct: Decimal,
+) -> Decimal | None:
+    """Estimate the market price where adverse cycles consume a balance threshold.
+
+    A rising market consumes base inventory through SELL cycles; a falling
+    market consumes quote inventory through BUY cycles. Parallel order pairs
+    are treated as one wave, and every next wave starts after the configured
+    spread and red-line move. This is intentionally a scenario estimate, not
+    an exchange guarantee.
+    """
+    if market_price <= 0 or balance < 0 or threshold < 0 or lot_quote <= 0:
+        return None
+    if balance <= threshold:
+        return market_price
+
+    pairs = max(order_pair_count, 1)
+    half_spread = spread_pct / (HUNDRED * Decimal("2"))
+    red_line = red_line_pct / HUNDRED
+
+    if side == "BUY":
+        buy_factor = Decimal("1") - half_spread
+        sell_factor = Decimal("1") + half_spread
+        step_factor = buy_factor * (Decimal("1") - red_line)
+        quote_per_order = lot_quote * buy_factor / sell_factor
+        if step_factor <= 0 or quote_per_order <= 0:
+            return None
+        orders = int(
+            ((balance - threshold) / quote_per_order).to_integral_value(
+                rounding=ROUND_CEILING
+            )
+        )
+        waves = (orders + pairs - 1) // pairs
+        return market_price * (step_factor ** waves)
+
+    if side == "SELL":
+        sell_factor = Decimal("1") + half_spread
+        step_factor = sell_factor * (Decimal("1") + red_line)
+        if step_factor <= 1:
+            return None
+        projected_price = market_price
+        projected_balance = balance
+        for _ in range(500):
+            sell_price = projected_price * sell_factor
+            projected_balance -= Decimal(pairs) * lot_quote / sell_price
+            projected_price *= step_factor
+            if projected_balance <= threshold:
+                return projected_price
+        return None
+
+    raise ValueError("side must be BUY or SELL")
