@@ -178,9 +178,62 @@ async def test_late_first_addition_bootstraps_at_current_market_with_gap() -> No
     )
 
     assert created
-    assert exchange.placed[0][2] > Decimal("100")
-    assert exchange.placed[0][2] < Decimal("101.01")
-    assert exchange.placed[1][2] > Decimal("101")
+    assert [item[2] for item in exchange.placed] == [
+        Decimal("100.850"),
+        Decimal("101.001"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_closed_historical_slot_does_not_block_grid_expansion() -> None:
+    exchange = FakeExchange()
+    engine = MarketMakerEngine(exchange, Settings(dry_run=True))  # type: ignore[arg-type]
+    config = pair(2)
+    dormant = open_cycle(0, "98.8", "99.0")
+    dormant.status = CycleStatus.CANCELED
+    live = open_cycle(1, "99.850", "100.000")
+    cycles = [dormant, live]
+
+    created = await engine._maybe_expand_grid(
+        FakeSession(),
+        config,
+        live,
+        live.orders[1],
+        cycles,
+        Quote(config.symbol, Decimal("100.001"), Decimal("100.002")),
+    )
+
+    assert created
+    assert dormant.retiring
+    assert cycles[-1].grid_slot == 2
+    assert [item[2] for item in exchange.placed] == [
+        Decimal("100.001"),
+        Decimal("100.151"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cycle_with_all_orders_canceled_on_exchange_is_closed() -> None:
+    exchange = FakeExchange()
+    engine = MarketMakerEngine(exchange, Settings(dry_run=True))  # type: ignore[arg-type]
+    config = pair(2)
+    cycle = open_cycle(0, "99.850", "100.000")
+    for order in cycle.orders:
+        order.status = OrderStatus.CANCELED
+    session = FakeSession()
+
+    await engine._update_cycle(
+        session,
+        config,
+        cycle,
+        [cycle],
+        Quote(config.symbol, Decimal("100.001"), Decimal("100.002")),
+    )
+
+    assert cycle.status == CycleStatus.CANCELED
+    assert cycle.closed_at is not None
+    event = next(value for value in session.added if isinstance(value, Event))
+    assert event.kind == "orders_canceled"
 
 
 @pytest.mark.asyncio

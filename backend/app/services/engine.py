@@ -535,7 +535,11 @@ class MarketMakerEngine:
         latest_cycles: list[TradeCycle],
         quote: Quote,
     ) -> bool:
-        active = [item for item in latest_cycles if not item.retiring]
+        active = [
+            item
+            for item in latest_cycles
+            if not item.retiring and item.status == CycleStatus.OPEN
+        ]
         if len(active) >= pair.order_pair_count:
             return False
 
@@ -552,28 +556,29 @@ class MarketMakerEngine:
         if winner.side == OrderSide.BUY and winner.price != min(order.price for order in side_orders):
             return False
 
-        prices = adjacent_prices(
+        exact_adjacent = adjacent_prices(
             winner.side.value,
             winner.price,
             pair.spread_pct,
             GRID_GAP_PCT,
             pair.price_precision,
         )
-        placement = "adjacent"
-        if prices_are_marketable(prices, quote.bid, quote.ask):
-            prices = target_prices(
-                quote.bid, quote.ask, pair.spread_pct, pair.price_precision
-            )
-            placement = "bootstrap_gap"
-            # Bootstrap gaps are allowed, overlaps are not.
-            if winner.side == OrderSide.SELL and prices.buy <= winner.price:
-                return False
-            if winner.side == OrderSide.BUY and prices.sell >= winner.price:
-                return False
+        prices = closest_maker_adjacent_prices(
+            winner.side.value,
+            winner.price,
+            quote.bid,
+            quote.ask,
+            pair.spread_pct,
+            GRID_GAP_PCT,
+            pair.price_precision,
+        )
+        if prices is None:
+            return False
+        placement = "adjacent" if prices == exact_adjacent else "bootstrap_min_gap"
         if self._prices_overlap_cycles(prices, active):
             return False
 
-        slots = [item.grid_slot for item in latest_cycles]
+        slots = [item.grid_slot for item in active]
         grid_slot = max(slots) + 1 if winner.side == OrderSide.SELL else min(slots) - 1
         successor = await self._open_cycle(
             session,
@@ -583,6 +588,21 @@ class MarketMakerEngine:
             prices=prices,
             placement=placement,
         )
+        remaining_capacity = pair.order_pair_count - len(active) - 1
+        dormant = [
+            item
+            for item in latest_cycles
+            if not item.retiring and item.status != CycleStatus.OPEN
+        ]
+        for item in dormant[max(0, remaining_capacity):]:
+            item.retiring = True
+            session.add(Event(
+                pair_id=pair.id,
+                kind="grid_pair_superseded",
+                message=(
+                    f"Grid {item.grid_slot} superseded by adjacent grid {grid_slot}"
+                ),
+            ))
         latest_cycles.append(successor)
         return True
 
@@ -617,6 +637,15 @@ class MarketMakerEngine:
             return
 
         canceled = [order for order in cycle.orders if order.status in {OrderStatus.CANCELED, OrderStatus.EXPIRED}]
+        if not filled and not open_orders and canceled:
+            cycle.status = CycleStatus.CANCELED
+            cycle.closed_at = datetime.now(timezone.utc)
+            session.add(Event(
+                pair_id=pair.id,
+                kind="orders_canceled",
+                message=f"Grid {cycle.grid_slot}: all orders canceled on exchange",
+            ))
+            return
         if len(filled) == 1 and (open_orders or canceled):
             winner = filled[0]
             if open_orders and not canceled and not cycle.retiring and not cycle.successor_spawned:
