@@ -4,7 +4,7 @@ export type Pair = {
   base_balance_trigger: string; base_balance_limit: string;
   quote_balance_trigger: string; quote_balance_limit: string;
   order_offset_pct: string; red_line_pct: string; pause_minutes: number;
-  price_precision: number; quantity_precision: number; irb: number;
+  price_precision: number; quantity_precision: number; order_pair_count: number;
   status: string; enabled: boolean; paused_until: string | null; last_error: string | null;
 };
 
@@ -13,6 +13,7 @@ export type Runtime = {
   bid_order: ActiveOrder | null; ask_order: ActiveOrder | null;
   red_line: RedLine | null;
   base_free: string | null; quote_free: string | null; balance_updated_at: string | null; open_orders: number;
+  active_order_pairs: number; retiring_order_pairs: number;
 };
 
 export type ActiveOrder = {
@@ -36,7 +37,7 @@ export type PairForm = {
   base_balance_trigger: string; base_balance_limit: string;
   quote_balance_trigger: string; quote_balance_limit: string;
   order_offset_pct: string; red_line_pct: string;
-  pause_minutes: number; price_precision: number; quantity_precision: number;
+  pause_minutes: number; price_precision: number; quantity_precision: number; order_pair_count: number;
 };
 
 export type ProfitBucket = {

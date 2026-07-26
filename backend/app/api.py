@@ -16,10 +16,10 @@ from app.models import (
 )
 from app.schemas import (
     ActiveOrderRead, AnalyticsPeriod, AnalyticsReport, EventPage, EventRead, FillRead, Health,
-    ManualIrb, OrderPage, OrderRead, PairCreate, PairRead,
+    OrderPage, OrderPairCountUpdate, OrderRead, PairCreate, PairRead,
     PairRuntime, PairUpdate, RedLineRead,
     PairStatistics, ProfitBucket, Statistics,
-    SymbolRead,
+    SymbolRead, maximum_order_pairs,
 )
 from app.services.pricing import red_line_trigger_price
 
@@ -121,30 +121,37 @@ async def list_pairs(request: Request, session: AsyncSession = Depends(get_sessi
             await request.app.state.engine.ensure_pair_runtime(pair)
         quote_item = request.app.state.engine.quotes.get(pair.symbol)
         balance_item = request.app.state.engine.pair_balances.get(pair.symbol)
-        cycle_orders = list((await session.scalars(
-            select(Order).join(TradeCycle).where(
-                TradeCycle.pair_id == pair.id,
-                TradeCycle.status == CycleStatus.OPEN,
-                Order.status.in_([
-                    OrderStatus.NEW, OrderStatus.PARTIALLY_FILLED, OrderStatus.FILLED,
-                ]),
-            ).order_by(Order.created_at.desc())
+        cycles = list((await session.scalars(
+            select(TradeCycle)
+            .where(TradeCycle.pair_id == pair.id, TradeCycle.status == CycleStatus.OPEN)
+            .options(selectinload(TradeCycle.orders))
+            .order_by(TradeCycle.opened_at)
         )).all())
+        cycle_orders = [
+            order
+            for cycle in cycles
+            for order in cycle.orders
+            if order.status in {
+                OrderStatus.NEW, OrderStatus.PARTIALLY_FILLED, OrderStatus.FILLED,
+            }
+        ]
         active_orders = [
             order for order in cycle_orders
             if order.status in {OrderStatus.NEW, OrderStatus.PARTIALLY_FILLED}
         ]
-        filled_orders = [order for order in cycle_orders if order.status == OrderStatus.FILLED]
         quote, quoted_at = quote_item if quote_item else (None, None)
         base_free, quote_free, balance_updated_at = balance_item if balance_item else (None, None, None)
-        orders_by_side: dict[OrderSide, Order] = {}
-        for order in active_orders:
-            orders_by_side.setdefault(order.side, order)
-        buy_order = orders_by_side.get(OrderSide.BUY)
-        sell_order = orders_by_side.get(OrderSide.SELL)
+        buys = [order for order in active_orders if order.side == OrderSide.BUY]
+        sells = [order for order in active_orders if order.side == OrderSide.SELL]
+        buy_order = max(buys, key=lambda order: order.price, default=None)
+        sell_order = min(sells, key=lambda order: order.price, default=None)
         red_line = None
-        if len(filled_orders) == 1:
-            winner = filled_orders[0]
+        red_line_candidates = []
+        for cycle in cycles:
+            cycle_filled = [order for order in cycle.orders if order.status == OrderStatus.FILLED]
+            if len(cycle_filled) != 1:
+                continue
+            winner = cycle_filled[0]
             market_price = (
                 quote.bid if quote and winner.side == OrderSide.BUY
                 else quote.ask if quote else None
@@ -152,11 +159,16 @@ async def list_pairs(request: Request, session: AsyncSession = Depends(get_sessi
             trigger_price, distance_pct = red_line_values(
                 winner.side, winner.price, market_price, pair.red_line_pct
             )
-            red_line = RedLineRead(
+            red_line_candidates.append(RedLineRead(
                 filled_side=winner.side,
                 reference_price=winner.price,
                 trigger_price=trigger_price,
                 distance_pct=distance_pct,
+            ))
+        if red_line_candidates:
+            red_line = min(
+                red_line_candidates,
+                key=lambda item: item.distance_pct if item.distance_pct is not None else Decimal("Infinity"),
             )
         result.append(PairRuntime(pair=PairRead.model_validate(pair), bid=quote.bid if quote else None,
                                   ask=quote.ask if quote else None,
@@ -176,7 +188,9 @@ async def list_pairs(request: Request, session: AsyncSession = Depends(get_sessi
                                   quote_updated_at=quoted_at,
                                   base_free=base_free, quote_free=quote_free,
                                   balance_updated_at=balance_updated_at,
-                                  open_orders=len(active_orders)))
+                                  open_orders=len(active_orders),
+                                  active_order_pairs=sum(not cycle.retiring for cycle in cycles),
+                                  retiring_order_pairs=sum(cycle.retiring for cycle in cycles)))
     return result
 
 
@@ -223,6 +237,37 @@ async def update_pair(pair_id: uuid.UUID, payload: PairUpdate, session: AsyncSes
     return pair
 
 
+@router.patch("/pairs/{pair_id}/order-pairs", response_model=PairRead)
+async def update_order_pair_count(
+    pair_id: uuid.UUID,
+    payload: OrderPairCountUpdate,
+    session: AsyncSession = Depends(get_session),
+) -> PairConfig:
+    pair = await session.get(PairConfig, pair_id)
+    if not pair:
+        raise HTTPException(404, "Pair not found")
+    maximum = maximum_order_pairs(pair.spread_pct, pair.red_line_pct)
+    if payload.value > maximum:
+        raise HTTPException(
+            422,
+            f"order pair count cannot exceed {maximum} for the configured spread and red line",
+        )
+    previous = pair.order_pair_count
+    pair.order_pair_count = payload.value
+    session.add(Event(
+        pair_id=pair.id,
+        kind="order_pair_count_updated",
+        message=(
+            f"Order pairs {previous} -> {payload.value}; outer pairs retire after settlement"
+            if payload.value < previous
+            else f"Order pairs {previous} -> {payload.value}"
+        ),
+    ))
+    await session.commit()
+    await session.refresh(pair)
+    return pair
+
+
 @router.post("/pairs/{pair_id}/start", response_model=PairRead)
 async def start_pair(pair_id: uuid.UUID, session: AsyncSession = Depends(get_session)) -> PairConfig:
     pair = await session.get(PairConfig, pair_id)
@@ -249,23 +294,6 @@ async def stop_pair(pair_id: uuid.UUID, session: AsyncSession = Depends(get_sess
         kind="manual_stop",
         message="Trading stopped; existing orders will be checked on restart",
     ))
-    await session.commit()
-    await session.refresh(pair)
-    return pair
-
-
-@router.post("/pairs/{pair_id}/irb", response_model=PairRead)
-async def set_irb(pair_id: uuid.UUID, payload: ManualIrb, session: AsyncSession = Depends(get_session)) -> PairConfig:
-    pair = await session.get(PairConfig, pair_id)
-    if not pair:
-        raise HTTPException(404, "Pair not found")
-    if pair.enabled:
-        raise HTTPException(409, "Stop the pair before manual rebalance")
-    previous = pair.irb
-    pair.irb = payload.value
-    pair.last_error = None
-    session.add(Event(pair_id=pair.id, kind="manual_rebalance",
-                      message=f"IRB {previous} -> {payload.value}. Note: {payload.note}"))
     await session.commit()
     await session.refresh(pair)
     return pair

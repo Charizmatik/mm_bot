@@ -56,6 +56,7 @@ export const api = {
   }),
   start: (id: string) => call<Pair>(`/pairs/${id}/start`, { method: 'POST' }),
   stop: (id: string) => call<Pair>(`/pairs/${id}/stop`, { method: 'POST' }),
-  irb: (id: string, value: number, note: string) =>
-    call<Pair>(`/pairs/${id}/irb`, { method: 'POST', body: JSON.stringify({ value, note }) }),
+  orderPairs: (id: string, value: number) => call<Pair>(`/pairs/${id}/order-pairs`, {
+    method: 'PATCH', body: JSON.stringify({value}),
+  }),
 };

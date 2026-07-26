@@ -136,7 +136,7 @@ class MexcExchange(Exchange):
         self, symbol: str, side: OrderSide, quantity: Decimal, price: Decimal, client_order_id: str
     ) -> ExchangeOrder:
         data = await self._private("POST", "/api/v3/order", {
-            "symbol": symbol, "side": side.value, "type": "LIMIT", "timeInForce": "GTC",
+            "symbol": symbol, "side": side.value, "type": "LIMIT_MAKER",
             "quantity": format(quantity, "f"), "price": format(price, "f"),
             "newClientOrderId": client_order_id,
         })

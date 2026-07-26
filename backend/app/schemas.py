@@ -7,6 +7,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.models import CycleStatus, OrderSide, OrderStatus, PairStatus
 
 
+GRID_GAP_PCT = Decimal("0.001")
+
+
+def maximum_order_pairs(spread_pct: Decimal, red_line_pct: Decimal) -> int:
+    return max(1, int(red_line_pct // (spread_pct + GRID_GAP_PCT)))
+
+
 class PairCreate(BaseModel):
     symbol: str = Field(pattern=r"^[A-Za-z0-9_/-]{5,30}$")
     base_asset: str = Field(min_length=2, max_length=20)
@@ -22,6 +29,7 @@ class PairCreate(BaseModel):
     pause_minutes: int = Field(ge=0, le=1440)
     price_precision: int = Field(ge=0, le=18)
     quantity_precision: int = Field(default=6, ge=0, le=18)
+    order_pair_count: int = Field(default=1, ge=1)
 
     @model_validator(mode="after")
     def validate_strategy(self) -> "PairCreate":
@@ -31,6 +39,11 @@ class PairCreate(BaseModel):
             raise ValueError("quote balance trigger must be greater than quote balance limit")
         if self.order_offset_pct >= self.spread_pct:
             raise ValueError("order_offset_pct must be smaller than spread_pct")
+        maximum = maximum_order_pairs(self.spread_pct, self.red_line_pct)
+        if self.order_pair_count > maximum:
+            raise ValueError(
+                f"order_pair_count cannot exceed {maximum} for the configured spread and red line"
+            )
         return self
 
 
@@ -42,7 +55,6 @@ class PairRead(PairCreate):
     model_config = ConfigDict(from_attributes=True)
     id: uuid.UUID
     exchange: str
-    irb: int
     status: PairStatus
     enabled: bool
     paused_until: datetime | None
@@ -75,11 +87,12 @@ class PairRuntime(BaseModel):
     quote_free: Decimal | None = None
     balance_updated_at: datetime | None = None
     open_orders: int = 0
+    active_order_pairs: int = 0
+    retiring_order_pairs: int = 0
 
 
-class ManualIrb(BaseModel):
-    value: int
-    note: str = Field(min_length=3, max_length=500)
+class OrderPairCountUpdate(BaseModel):
+    value: int = Field(ge=1)
 
 
 class EventRead(BaseModel):

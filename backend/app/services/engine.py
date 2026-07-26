@@ -25,8 +25,10 @@ from app.models import (
 )
 from app.services.accounting import AccountedFill, calculate_profit
 from app.services.pricing import (
-    balance_level, irb_after_unmatched_fill, quantities, red_line_crossed, target_prices,
+    Prices, adjacent_prices, balance_level, prices_are_marketable, quantities,
+    red_line_crossed, target_prices,
 )
+from app.schemas import GRID_GAP_PCT
 
 
 OPEN_ORDER_STATUSES = {OrderStatus.NEW, OrderStatus.PARTIALLY_FILLED}
@@ -189,19 +191,24 @@ class MarketMakerEngine:
             if not pair or not pair.enabled:
                 return
             now = datetime.now(timezone.utc)
-            cycle = await session.scalar(
+            cycles = list((await session.scalars(
                 select(TradeCycle)
-                .where(TradeCycle.pair_id == pair.id, TradeCycle.status == CycleStatus.OPEN)
+                .where(TradeCycle.pair_id == pair.id)
                 .options(selectinload(TradeCycle.orders).selectinload(Order.fills))
-                .order_by(TradeCycle.opened_at.desc())
-            )
+                .order_by(TradeCycle.opened_at)
+            )).all())
+            latest_by_slot: dict[int, TradeCycle] = {}
+            for item in cycles:
+                latest_by_slot[item.grid_slot] = item
+            latest_cycles = list(latest_by_slot.values())
+            open_cycles = [item for item in latest_cycles if item.status == CycleStatus.OPEN]
 
             balances, balances_at = await self._account_balances()
             if balances:
                 base_free = balances.get(pair.base_asset, Decimal("0"))
                 quote_free = balances.get(pair.quote_asset, Decimal("0"))
                 self.pair_balances[pair.symbol] = (base_free, quote_free, balances_at)
-                if await self._apply_balance_controls(session, pair, cycle, base_free, quote_free):
+                if await self._apply_balance_controls(session, pair, open_cycles, base_free, quote_free):
                     await session.commit()
                     return
 
@@ -234,19 +241,28 @@ class MarketMakerEngine:
                     await session.commit()
                 return
 
-            if cycle is None:
-                await self._open_cycle(session, pair, quote)
-            else:
-                await self._update_cycle(session, pair, cycle, quote)
+            await self._reconcile_grid(session, pair, latest_cycles, quote)
+            for cycle in list(latest_cycles):
+                if cycle.status == CycleStatus.OPEN:
+                    await self._update_cycle(session, pair, cycle, latest_cycles, quote)
             pair.last_error = None
             if pair.status == PairStatus.ERROR:
                 pair.status = PairStatus.RUNNING
             await session.commit()
 
-    async def _open_cycle(self, session, pair: PairConfig, quote: Quote) -> None:
-        prices = target_prices(
-            quote.bid, quote.ask, pair.spread_pct, pair.order_offset_pct, pair.irb, pair.price_precision
-        )
+    async def _open_cycle(
+        self,
+        session,
+        pair: PairConfig,
+        quote: Quote,
+        *,
+        grid_slot: int,
+        prices: Prices | None = None,
+        placement: str = "bootstrap",
+    ) -> TradeCycle:
+        prices = prices or target_prices(quote.bid, quote.ask, pair.spread_pct, pair.price_precision)
+        if prices.buy >= prices.sell:
+            raise RuntimeError("spread is below price precision")
         buy_qty, sell_qty = quantities(pair.lot_quote, prices, pair.quantity_precision)
         if buy_qty <= 0 or sell_qty <= 0:
             raise RuntimeError("lot is below quantity precision")
@@ -263,7 +279,12 @@ class MarketMakerEngine:
                 raise RuntimeError(
                     f"insufficient {pair.base_asset}: need {sell_qty}, available {base_free}"
                 )
-        cycle = TradeCycle(pair_id=pair.id, reference_bid=quote.bid, reference_ask=quote.ask)
+        cycle = TradeCycle(
+            pair_id=pair.id,
+            reference_bid=quote.bid,
+            reference_ask=quote.ask,
+            grid_slot=grid_slot,
+        )
         session.add(cycle)
         await session.flush()
         placed: list[tuple[OrderSide, object, Decimal, Decimal, str]] = []
@@ -284,9 +305,173 @@ class MarketMakerEngine:
                               client_order_id=client_id, side=side, status=result.status,
                               price=price, quantity=qty, executed_quantity=result.executed_quantity))
         session.add(Event(pair_id=pair.id, kind="orders_placed",
-                          message=f"BUY {buy_qty} @ {prices.buy}; SELL {sell_qty} @ {prices.sell}"))
+                          message=(f"Grid {grid_slot} ({placement}): BUY {buy_qty} @ {prices.buy}; "
+                                   f"SELL {sell_qty} @ {prices.sell}")))
+        return cycle
 
-    async def _update_cycle(self, session, pair: PairConfig, cycle: TradeCycle, quote: Quote) -> None:
+    async def _reconcile_grid(
+        self,
+        session,
+        pair: PairConfig,
+        latest_cycles: list[TradeCycle],
+        quote: Quote,
+    ) -> None:
+        """Retire outer slots or restart completed slots without filling new capacity eagerly."""
+        midpoint = (quote.bid + quote.ask) / Decimal("2")
+        active = [cycle for cycle in latest_cycles if not cycle.retiring]
+        retired = [cycle for cycle in latest_cycles if cycle.retiring]
+
+        if len(active) < pair.order_pair_count and retired:
+            # A quick decrease/increase should reuse slots that are still being
+            # traded instead of creating overlapping replacements.
+            retired.sort(
+                key=lambda cycle: abs(
+                    ((cycle.reference_bid + cycle.reference_ask) / Decimal("2")) - midpoint
+                )
+            )
+            for cycle in retired[:pair.order_pair_count - len(active)]:
+                cycle.retiring = False
+                active.append(cycle)
+
+        if len(active) > pair.order_pair_count:
+            active.sort(
+                key=lambda cycle: abs(
+                    ((cycle.reference_bid + cycle.reference_ask) / Decimal("2")) - midpoint
+                ),
+                reverse=True,
+            )
+            for cycle in active[:len(active) - pair.order_pair_count]:
+                cycle.retiring = True
+                session.add(Event(
+                    pair_id=pair.id,
+                    kind="grid_pair_retiring",
+                    message=(
+                        f"Grid {cycle.grid_slot} will finish without replacement"
+                    ),
+                ))
+            active = [cycle for cycle in active if not cycle.retiring]
+
+        if not latest_cycles:
+            latest_cycles.append(await self._open_cycle(
+                session, pair, quote, grid_slot=0, placement="initial"
+            ))
+            return
+
+        now = datetime.now(timezone.utc)
+        for cycle in list(active):
+            if cycle.status == CycleStatus.OPEN:
+                continue
+            replacement_after = cycle.replacement_after
+            if replacement_after and replacement_after.tzinfo is None:
+                replacement_after = replacement_after.replace(tzinfo=timezone.utc)
+            if replacement_after and replacement_after > now:
+                continue
+            prices = target_prices(
+                quote.bid, quote.ask, pair.spread_pct, pair.price_precision
+            )
+            other_cycles = [
+                item
+                for item in latest_cycles
+                if item is not cycle and item.status == CycleStatus.OPEN
+            ]
+            if self._prices_overlap_cycles(prices, other_cycles):
+                original = Prices(
+                    buy=next(order.price for order in cycle.orders if order.side == OrderSide.BUY),
+                    sell=next(order.price for order in cycle.orders if order.side == OrderSide.SELL),
+                )
+                if (
+                    prices_are_marketable(original, quote.bid, quote.ask)
+                    or self._prices_overlap_cycles(original, other_cycles)
+                ):
+                    continue
+                prices = original
+            replacement = await self._open_cycle(
+                session,
+                pair,
+                quote,
+                grid_slot=cycle.grid_slot,
+                prices=prices,
+                placement="replacement",
+            )
+            latest_cycles[latest_cycles.index(cycle)] = replacement
+
+    @staticmethod
+    def _prices_overlap_cycles(prices: Prices, cycles: list[TradeCycle]) -> bool:
+        for cycle in cycles:
+            buys = [order.price for order in cycle.orders if order.side == OrderSide.BUY]
+            sells = [order.price for order in cycle.orders if order.side == OrderSide.SELL]
+            if buys and sells and prices.buy <= max(sells) and prices.sell >= min(buys):
+                return True
+        return False
+
+    async def _maybe_expand_grid(
+        self,
+        session,
+        pair: PairConfig,
+        cycle: TradeCycle,
+        winner: Order,
+        latest_cycles: list[TradeCycle],
+        quote: Quote,
+    ) -> bool:
+        active = [item for item in latest_cycles if not item.retiring]
+        if len(active) >= pair.order_pair_count:
+            return False
+
+        side_orders = [
+            order
+            for item in active
+            for order in item.orders
+            if order.side == winner.side
+        ]
+        if not side_orders:
+            return False
+        if winner.side == OrderSide.SELL and winner.price != max(order.price for order in side_orders):
+            return False
+        if winner.side == OrderSide.BUY and winner.price != min(order.price for order in side_orders):
+            return False
+
+        prices = adjacent_prices(
+            winner.side.value,
+            winner.price,
+            pair.spread_pct,
+            GRID_GAP_PCT,
+            pair.price_precision,
+        )
+        placement = "adjacent"
+        if prices_are_marketable(prices, quote.bid, quote.ask):
+            prices = target_prices(
+                quote.bid, quote.ask, pair.spread_pct, pair.price_precision
+            )
+            placement = "bootstrap_gap"
+            # Bootstrap gaps are allowed, overlaps are not.
+            if winner.side == OrderSide.SELL and prices.buy <= winner.price:
+                return False
+            if winner.side == OrderSide.BUY and prices.sell >= winner.price:
+                return False
+        if self._prices_overlap_cycles(prices, active):
+            return False
+
+        slots = [item.grid_slot for item in latest_cycles]
+        grid_slot = max(slots) + 1 if winner.side == OrderSide.SELL else min(slots) - 1
+        successor = await self._open_cycle(
+            session,
+            pair,
+            quote,
+            grid_slot=grid_slot,
+            prices=prices,
+            placement=placement,
+        )
+        latest_cycles.append(successor)
+        return True
+
+    async def _update_cycle(
+        self,
+        session,
+        pair: PairConfig,
+        cycle: TradeCycle,
+        latest_cycles: list[TradeCycle],
+        quote: Quote,
+    ) -> None:
         for order in cycle.orders:
             if order.status in OPEN_ORDER_STATUSES:
                 result = await self.exchange.order(pair.symbol, order.exchange_order_id)
@@ -312,6 +497,11 @@ class MarketMakerEngine:
         canceled = [order for order in cycle.orders if order.status in {OrderStatus.CANCELED, OrderStatus.EXPIRED}]
         if len(filled) == 1 and (open_orders or canceled):
             winner = filled[0]
+            if open_orders and not canceled and not cycle.retiring and not cycle.successor_spawned:
+                if await self._maybe_expand_grid(
+                    session, pair, cycle, winner, latest_cycles, quote
+                ):
+                    cycle.successor_spawned = True
             crossed = bool(canceled) or red_line_crossed(
                 winner.side.value, winner.price, quote.bid, quote.ask, pair.red_line_pct
             )
@@ -322,14 +512,13 @@ class MarketMakerEngine:
                     order.executed_quantity = result.executed_quantity
                 if not await self._settle_cycle(pair, cycle, filled, mark_price):
                     return
-                previous_irb = pair.irb
-                pair.irb = irb_after_unmatched_fill(pair.irb, winner.side.value)
                 cycle.status = CycleStatus.RED_LINE
                 cycle.closed_at = datetime.now(timezone.utc)
-                pair.paused_until = datetime.now(timezone.utc) + timedelta(minutes=pair.pause_minutes)
-                pair.status = PairStatus.PAUSED
+                cycle.replacement_after = datetime.now(timezone.utc) + timedelta(
+                    minutes=pair.pause_minutes
+                )
                 session.add(Event(pair_id=pair.id, level="warning", kind="red_line",
-                                  message=(f"{winner.side.value} filled; IRB {previous_irb} -> {pair.irb}; "
+                                  message=(f"Grid {cycle.grid_slot}: {winner.side.value} filled; "
                                            f"gross={cycle.gross_profit_quote} fee={cycle.commission_quote} "
                                            f"net={cycle.net_profit_quote} {pair.quote_asset}")))
 
@@ -416,7 +605,7 @@ class MarketMakerEngine:
         self,
         session,
         pair: PairConfig,
-        cycle: TradeCycle | None,
+        cycles: list[TradeCycle],
         base_free: Decimal,
         quote_free: Decimal,
     ) -> bool:
@@ -429,7 +618,8 @@ class MarketMakerEngine:
         if quote_level == "limit":
             limits.append(f"{pair.quote_asset}={quote_free} <= {pair.quote_balance_limit}")
         if limits:
-            await self._cancel_cycle_orders(pair, cycle)
+            for cycle in cycles:
+                await self._cancel_cycle_orders(pair, cycle)
             pair.enabled = False
             pair.status = PairStatus.LIMIT_REACHED
             session.add(Event(
@@ -462,9 +652,7 @@ class MarketMakerEngine:
                 ))
         return False
 
-    async def _cancel_cycle_orders(self, pair: PairConfig, cycle: TradeCycle | None) -> None:
-        if not cycle:
-            return
+    async def _cancel_cycle_orders(self, pair: PairConfig, cycle: TradeCycle) -> None:
         for order in cycle.orders:
             if order.status in OPEN_ORDER_STATUSES:
                 result = await self.exchange.cancel(pair.symbol, order.exchange_order_id)
@@ -479,11 +667,14 @@ class MarketMakerEngine:
             pair = await session.get(PairConfig, pair_id)
             if not pair:
                 return
-            cycle = await session.scalar(
-                select(TradeCycle).where(TradeCycle.pair_id == pair.id, TradeCycle.status == CycleStatus.OPEN)
+            cycles = list((await session.scalars(
+                select(TradeCycle).where(
+                    TradeCycle.pair_id == pair.id,
+                    TradeCycle.status == CycleStatus.OPEN,
+                )
                 .options(selectinload(TradeCycle.orders).selectinload(Order.fills))
-            )
-            if cycle:
+            )).all())
+            for cycle in cycles:
                 await self._cancel_cycle_orders(pair, cycle)
             session.add(Event(pair_id=pair.id, kind="manual_stop", message="Trading stopped; open orders canceled"))
             await session.commit()

@@ -7,6 +7,7 @@ from app.api import (
     _next_period, _period_start, order_distance_pct, red_line_values, reported_cycle_profit, stop_pair,
 )
 from app.models import CycleStatus, Event, OrderSide, PairConfig, PairStatus, TradeCycle
+from app.schemas import PairCreate, maximum_order_pairs
 from app.services.engine import describe_exception
 
 
@@ -160,6 +161,31 @@ def test_engine_error_includes_cause_chain() -> None:
         assert describe_exception(error) == (
             "RuntimeError: order refresh failed <- caused by "
             "ConnectionError: exchange disconnected"
+        )
+
+
+def test_grid_capacity_fits_inside_red_line() -> None:
+    assert maximum_order_pairs(Decimal("0.15"), Decimal("1")) == 6
+
+
+def test_pair_schema_rejects_grid_outside_red_line() -> None:
+    with pytest.raises(ValueError, match="order_pair_count cannot exceed 6"):
+        PairCreate(
+            symbol="BTCUSDT",
+            base_asset="BTC",
+            quote_asset="USDT",
+            lot_quote=Decimal("100"),
+            spread_pct=Decimal("0.15"),
+            base_balance_trigger=Decimal("0.01"),
+            base_balance_limit=Decimal("0.005"),
+            quote_balance_trigger=Decimal("500"),
+            quote_balance_limit=Decimal("200"),
+            order_offset_pct=Decimal("0.005"),
+            red_line_pct=Decimal("1"),
+            pause_minutes=1,
+            price_precision=2,
+            quantity_precision=6,
+            order_pair_count=7,
         )
 
 

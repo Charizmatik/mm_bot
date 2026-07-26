@@ -65,6 +65,9 @@ class PairConfig(Base):
     pause_minutes: Mapped[int] = mapped_column(Integer, default=1)
     price_precision: Mapped[int] = mapped_column(Integer, default=2)
     quantity_precision: Mapped[int] = mapped_column(Integer, default=6)
+    order_pair_count: Mapped[int] = mapped_column(Integer, default=1)
+    # Retained for database compatibility. Neutral grid pricing no longer
+    # reads or mutates this legacy inventory-skew value.
     irb: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[PairStatus] = mapped_column(Enum(PairStatus), default=PairStatus.STOPPED)
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -88,6 +91,10 @@ class TradeCycle(Base):
     commission_quote: Mapped[Decimal] = mapped_column(Numeric(30, 12), default=Decimal("0"))
     net_profit_quote: Mapped[Decimal] = mapped_column(Numeric(30, 12), default=Decimal("0"))
     mark_price: Mapped[Decimal | None] = mapped_column(Numeric(30, 12), nullable=True)
+    grid_slot: Mapped[int] = mapped_column(Integer, default=0)
+    retiring: Mapped[bool] = mapped_column(Boolean, default=False)
+    successor_spawned: Mapped[bool] = mapped_column(Boolean, default=False)
+    replacement_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

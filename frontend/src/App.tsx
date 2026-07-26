@@ -8,7 +8,7 @@ const initial: PairForm = {
   base_balance_trigger: '0.01', base_balance_limit: '0.005',
   quote_balance_trigger: '500', quote_balance_limit: '200',
   order_offset_pct: '0.005', red_line_pct: '0.5',
-  pause_minutes: 2, price_precision: 2, quantity_precision: 6,
+  pause_minutes: 2, price_precision: 2, quantity_precision: 6, order_pair_count: 1,
 };
 
 const labels: Record<string, string> = {
@@ -80,6 +80,13 @@ function Dashboard() {
     finally { setBusy(''); }
   }
 
+  async function setOrderPairs(id: string, value: number) {
+    setBusy(id + 'order-pairs');
+    try { await api.orderPairs(id, value); await refresh(); }
+    catch (e) { setError((e as Error).message); }
+    finally { setBusy(''); }
+  }
+
   function openCreate() {
     setEditingId(null); setForm(initial); setShowForm(true);
   }
@@ -97,7 +104,7 @@ function Dashboard() {
       order_offset_pct: compactDecimal(p.order_offset_pct),
       red_line_pct: compactDecimal(p.red_line_pct),
       pause_minutes: p.pause_minutes, price_precision: p.price_precision,
-      quantity_precision: p.quantity_precision,
+      quantity_precision: p.quantity_precision, order_pair_count: p.order_pair_count,
     });
     setShowForm(true);
     window.scrollTo({top: 0, behavior: 'smooth'});
@@ -213,6 +220,8 @@ function Dashboard() {
         <Field label={`Ліміт ${form.quote_asset || 'quote'}`} type="number" value={form.quote_balance_limit} onChange={v => setForm({...form, quote_balance_limit: v})} />
         <Field label="Знаків ціни" type="number" value={form.price_precision} onChange={v => setForm({...form, price_precision: +v})} />
         <Field label="Знаків кількості" type="number" value={form.quantity_precision} onChange={v => setForm({...form, quantity_precision: +v})} />
+        <Field label="Кількість пар ордерів" type="number" value={form.order_pair_count}
+          onChange={v => setForm({...form, order_pair_count: +v})} />
       </div>
       <button className="primary" disabled={busy === 'create' || busy.endsWith('edit')}>
         {busy === 'create' || busy.endsWith('edit') ? 'Зберігаю…' : editingId ? 'Зберегти всі зміни' : 'Створити пару'}</button>
@@ -222,7 +231,7 @@ function Dashboard() {
       <div className="section-title"><h3>Торгові пари</h3><span>{pairs.length} конфігурацій</span></div>
       {pairs.length === 0 ? <div className="empty">Ще немає торгових пар. Додайте першу конфігурацію.</div> :
         <div className="pair-grid">{pairs.map(runtime => <PairCard key={runtime.pair.id} runtime={runtime}
-          busy={busy} onAct={act} onEdit={prepareEdit} />)}</div>}
+          busy={busy} onAct={act} onEdit={prepareEdit} onPairCount={setOrderPairs} />)}</div>}
     </section>
 
     <section className="orders-section">
@@ -354,9 +363,10 @@ function Field({label, value, onChange, type='text', readOnly=false}: {label: st
     readOnly={readOnly} className={readOnly ? 'readonly' : ''} onChange={e => onChange?.(e.target.value)} /></label>;
 }
 
-function PairCard({runtime, busy, onAct, onEdit}: {
+function PairCard({runtime, busy, onAct, onEdit, onPairCount}: {
   runtime: Runtime; busy: string; onAct: (id:string, a:'start'|'stop')=>void;
   onEdit:(r:Runtime)=>void | Promise<void>;
+  onPairCount:(id:string, value:number)=>void | Promise<void>;
 }) {
   const p = runtime.pair;
   const baseWarning = runtime.base_free !== null && Number(runtime.base_free) <= Number(p.base_balance_trigger);
@@ -371,6 +381,10 @@ function PairCard({runtime, busy, onAct, onEdit}: {
     ? baseValue / portfolioValue * 100 : null;
   const quoteShare = portfolioValue !== null && portfolioValue > 0 && quoteValue !== null
     ? quoteValue / portfolioValue * 100 : null;
+  const maximumPairs = Math.max(
+    1,
+    Math.floor(Number(p.red_line_pct) / (Number(p.spread_pct) + 0.001)),
+  );
   return <article className={`pair-card status-${p.status}`}>
     <div className="pair-head"><div><span className="exchange">{p.exchange}</span><h3>{p.base_asset}<em>/{p.quote_asset}</em></h3></div>
       <span className="status"><i />{labels[p.status] || p.status}</span></div>
@@ -389,8 +403,15 @@ function PairCard({runtime, busy, onAct, onEdit}: {
       <div><span>До спрацювання</span><b>{runtime.red_line.distance_pct === null ? '—' :
         `${formatNumber(runtime.red_line.distance_pct, 4)}%`}</b></div>
     </div>}
-    <div className="irb-row"><span>Індикатор руху балансу</span><div>
-      <b>{p.irb > 0 ? '+' : ''}{p.irb}</b></div></div>
+    <div className="irb-row"><span>Пари ордерів · активні {runtime.active_order_pairs}
+      {runtime.retiring_order_pairs > 0 ? ` · доторговуються ${runtime.retiring_order_pairs}` : ''}</span><div>
+      <button className="secondary" type="button" disabled={p.order_pair_count <= 1 || busy.startsWith(p.id)}
+        onClick={() => onPairCount(p.id, p.order_pair_count - 1)}>−</button>
+      <b>{p.order_pair_count}</b>
+      <button className="secondary" type="button"
+        disabled={p.order_pair_count >= maximumPairs || busy.startsWith(p.id)}
+        onClick={() => onPairCount(p.id, p.order_pair_count + 1)}>+</button>
+    </div></div>
     <div className="balance-grid">
       <div className={baseWarning ? 'warn' : ''}><span>Баланс {p.base_asset}</span><strong>{formatNumber(runtime.base_free, p.quantity_precision)}</strong>
         {baseValue !== null && <div className="valuation">≈ {formatNumber(baseValue, p.price_precision)} {p.quote_asset}
@@ -407,7 +428,8 @@ function PairCard({runtime, busy, onAct, onEdit}: {
       <i style={{width: `${baseShare}%`}} /><span /></div>}
     <dl><div><dt>Лот</dt><dd>{formatNumber(p.lot_quote, p.price_precision)} {p.quote_asset}</dd></div><div><dt>Спред</dt><dd>{formatNumber(p.spread_pct, 6)}%</dd></div>
       <div><dt>Зміщення</dt><dd>{formatNumber(p.order_offset_pct, 6)}%</dd></div><div><dt>Red line</dt><dd>{formatNumber(p.red_line_pct, 6)}%</dd></div>
-      <div><dt>Ордери</dt><dd>{runtime.open_orders}</dd></div><div><dt>Пауза</dt><dd>{p.pause_minutes} хв</dd></div></dl>
+      <div><dt>Ордери</dt><dd>{runtime.open_orders}</dd></div><div><dt>Пари</dt><dd>{p.order_pair_count} / {maximumPairs}</dd></div>
+      <div><dt>Пауза</dt><dd>{p.pause_minutes} хв</dd></div></dl>
     {p.last_error && <p className="pair-error">{p.last_error}</p>}
     <div className="actions"><button className={p.enabled ? 'danger' : 'primary'} disabled={busy.startsWith(p.id)}
       onClick={() => onAct(p.id, p.enabled ? 'stop' : 'start')}>{p.enabled ? 'Зупинити' : 'Запустити'}</button>

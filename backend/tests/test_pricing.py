@@ -3,26 +3,35 @@ from decimal import Decimal
 import pytest
 
 from app.services.pricing import (
-    Prices, balance_level, irb_after_unmatched_fill, quantities, red_line_crossed,
-    red_line_trigger_price, target_prices,
+    Prices, adjacent_prices, balance_level, prices_are_marketable, quantities,
+    red_line_crossed, red_line_trigger_price, target_prices,
 )
 
 
 def test_neutral_prices_match_spec_example() -> None:
-    result = target_prices(Decimal("60000"), Decimal("60001"), Decimal("0.15"), Decimal("0.005"), 0, 0)
+    result = target_prices(Decimal("60000"), Decimal("60001"), Decimal("0.15"), 0)
     assert result == Prices(buy=Decimal("59955"), sell=Decimal("60046"))
 
 
-def test_positive_irb_moves_buy_near_and_sell_far() -> None:
-    result = target_prices(Decimal("60000"), Decimal("60001"), Decimal("0.15"), Decimal("0.005"), 2, 0)
-    assert result.buy == Decimal("59997")
-    assert result.sell == Decimal("60088")
+def test_upper_grid_cell_is_adjacent_without_overlap() -> None:
+    result = adjacent_prices("SELL", Decimal("100"), Decimal("0.15"), Decimal("0.001"), 3)
+    assert result == Prices(buy=Decimal("100.001"), sell=Decimal("100.151"))
 
 
-def test_negative_irb_reverses_skew() -> None:
-    result = target_prices(Decimal("60000"), Decimal("60001"), Decimal("0.15"), Decimal("0.005"), -1, 0)
-    assert result.buy == Decimal("59913")
-    assert result.sell == Decimal("60004")
+def test_lower_grid_cell_is_adjacent_without_overlap() -> None:
+    result = adjacent_prices("BUY", Decimal("100"), Decimal("0.15"), Decimal("0.001"), 3)
+    assert result == Prices(buy=Decimal("99.849"), sell=Decimal("99.999"))
+
+
+def test_adjacent_price_uses_at_least_one_tick_when_gap_rounds_away() -> None:
+    result = adjacent_prices("SELL", Decimal("100"), Decimal("0.15"), Decimal("0.001"), 2)
+    assert result.buy == Decimal("100.01")
+
+
+def test_marketable_grid_cell_is_detected() -> None:
+    assert prices_are_marketable(Prices(Decimal("101"), Decimal("102")), Decimal("100"), Decimal("101"))
+    assert prices_are_marketable(Prices(Decimal("99"), Decimal("100")), Decimal("100"), Decimal("101"))
+    assert not prices_are_marketable(Prices(Decimal("99"), Decimal("102")), Decimal("100"), Decimal("101"))
 
 
 def test_quantities_are_quote_lots() -> None:
@@ -42,18 +51,6 @@ def test_red_line_trigger_price() -> None:
     assert red_line_trigger_price("SELL", Decimal("100"), Decimal("1")) == Decimal("101")
     with pytest.raises(ValueError):
         red_line_trigger_price("UNKNOWN", Decimal("100"), Decimal("1"))
-
-
-def test_irb_tracks_one_sided_red_line_cycles() -> None:
-    assert irb_after_unmatched_fill(0, "SELL") == 1
-    assert irb_after_unmatched_fill(1, "SELL") == 2
-    assert irb_after_unmatched_fill(0, "BUY") == -1
-    assert irb_after_unmatched_fill(-1, "BUY") == -2
-
-
-def test_irb_rejects_unknown_side() -> None:
-    with pytest.raises(ValueError):
-        irb_after_unmatched_fill(0, "UNKNOWN")
 
 
 def test_fixed_balance_levels() -> None:

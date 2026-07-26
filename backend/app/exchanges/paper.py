@@ -28,6 +28,12 @@ class PaperExchange(Exchange):
     async def place_limit(
         self, symbol: str, side: OrderSide, quantity: Decimal, price: Decimal, client_order_id: str
     ) -> ExchangeOrder:
+        quote = self._quotes.get(symbol)
+        if quote and (
+            (side == OrderSide.BUY and price >= quote.ask)
+            or (side == OrderSide.SELL and price <= quote.bid)
+        ):
+            raise RuntimeError("post-only order would execute immediately")
         order_id = f"paper-{uuid.uuid4().hex}"
         self._orders[order_id] = {"symbol": symbol, "side": side, "quantity": quantity, "price": price,
                                   "client_order_id": client_order_id, "status": OrderStatus.NEW}
