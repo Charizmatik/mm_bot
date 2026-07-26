@@ -58,6 +58,9 @@ function Dashboard() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
+  const [pairView, setPairView] = useState<'compact' | 'detailed'>(() =>
+    localStorage.getItem('pair-view') === 'detailed' ? 'detailed' : 'compact'
+  );
 
   const refresh = useCallback(async () => {
     try {
@@ -231,9 +234,21 @@ function Dashboard() {
     </form>}
 
     <section className="pairs">
-      <div className="section-title"><h3>Торгові пари</h3><span>{pairs.length} конфігурацій</span></div>
+      <div className="section-title pairs-title"><div><h3>Торгові пари</h3><span>{pairs.length} конфігурацій</span></div>
+        <div className="view-switch" role="group" aria-label="Вигляд торгових пар">
+          <button type="button" className={pairView === 'compact' ? 'active' : ''}
+            aria-pressed={pairView === 'compact'} onClick={() => {
+              setPairView('compact'); localStorage.setItem('pair-view', 'compact');
+            }}>Стисло</button>
+          <button type="button" className={pairView === 'detailed' ? 'active' : ''}
+            aria-pressed={pairView === 'detailed'} onClick={() => {
+              setPairView('detailed'); localStorage.setItem('pair-view', 'detailed');
+            }}>Детально</button>
+        </div>
+      </div>
       {pairs.length === 0 ? <div className="empty">Ще немає торгових пар. Додайте першу конфігурацію.</div> :
-        <div className="pair-grid">{pairs.map(runtime => <PairCard key={runtime.pair.id} runtime={runtime}
+        <div className={`pair-grid ${pairView}`}>{pairs.map(runtime => <PairCard key={runtime.pair.id} runtime={runtime}
+          detailed={pairView === 'detailed'}
           busy={busy} onAct={act} onEdit={prepareEdit} onPairCount={setOrderPairs} />)}</div>}
     </section>
 
@@ -411,8 +426,8 @@ function RuntimePairCard({item, pair}: {item: RuntimeOrderPair; pair: Pair}) {
   </article>;
 }
 
-function PairCard({runtime, busy, onAct, onEdit, onPairCount}: {
-  runtime: Runtime; busy: string; onAct: (id:string, a:'start'|'stop')=>void;
+function PairCard({runtime, detailed, busy, onAct, onEdit, onPairCount}: {
+  runtime: Runtime; detailed: boolean; busy: string; onAct: (id:string, a:'start'|'stop')=>void;
   onEdit:(r:Runtime)=>void | Promise<void>;
   onPairCount:(id:string, value:number)=>void | Promise<void>;
 }) {
@@ -433,9 +448,17 @@ function PairCard({runtime, busy, onAct, onEdit, onPairCount}: {
     1,
     Math.floor(Number(p.red_line_pct) / (Number(p.spread_pct) + 0.001)),
   );
-  return <article className={`pair-card status-${p.status}`}>
+  const quoteTime = runtime.quote_updated_at
+    ? new Date(runtime.quote_updated_at).toLocaleTimeString('uk-UA', {hour: '2-digit', minute: '2-digit', second: '2-digit'})
+    : null;
+  return <article className={`pair-card status-${p.status} ${detailed ? 'detailed' : 'compact'}`}>
     <div className="pair-head"><div><span className="exchange">{p.exchange}</span><h3>{p.base_asset}<em>/{p.quote_asset}</em></h3></div>
       <span className="status"><i />{labels[p.status] || p.status}</span></div>
+    <div className="market-price">
+      <div><span>ПОТОЧНА ЦІНА НА БІРЖІ</span>
+        <strong>{formatNumber(midpoint, p.price_precision, true)} <em>{p.quote_asset}</em></strong></div>
+      <small>{quoteTime ? `Оновлено ${quoteTime}` : 'Очікуємо котирування'}</small>
+    </div>
     <div className="quote"><div><span>РИНКОВИЙ BID</span><strong>{formatNumber(runtime.bid, p.price_precision, true)}</strong></div>
       <div><span>РИНКОВИЙ ASK</span><strong>{formatNumber(runtime.ask, p.price_precision, true)}</strong></div></div>
     <div className="irb-row"><span>Пари ордерів · активні {runtime.active_order_pairs}
@@ -447,12 +470,12 @@ function PairCard({runtime, busy, onAct, onEdit, onPairCount}: {
         disabled={p.order_pair_count >= maximumPairs || busy.startsWith(p.id)}
         onClick={() => onPairCount(p.id, p.order_pair_count + 1)}>+</button>
     </div></div>
-    <div className="runtime-pairs">
+    {detailed && <div className="runtime-pairs">
       {runtime.order_pairs.length === 0 ? <div className="runtime-pairs-empty">
         Активні ордери ще не виставлені.
       </div> : runtime.order_pairs.map(item =>
         <RuntimePairCard key={item.cycle_id} item={item} pair={p} />)}
-    </div>
+    </div>}
     <div className="balance-grid">
       <div className={baseWarning ? 'warn' : ''}><span>Баланс {p.base_asset}</span><strong>{formatNumber(runtime.base_free, p.quantity_precision)}</strong>
         {baseValue !== null && <div className="valuation">≈ {formatNumber(baseValue, p.price_precision)} {p.quote_asset}
@@ -467,7 +490,7 @@ function PairCard({runtime, busy, onAct, onEdit, onPairCount}: {
     </div>
     {baseShare !== null && quoteShare !== null && <div className="allocation" aria-label={`Розподіл балансу: ${p.base_asset} ${formatNumber(baseShare, 1)}%, ${p.quote_asset} ${formatNumber(quoteShare, 1)}%`}>
       <i style={{width: `${baseShare}%`}} /><span /></div>}
-    <dl><div><dt>Лот</dt><dd>{formatNumber(p.lot_quote, p.price_precision)} {p.quote_asset}</dd></div><div><dt>Спред</dt><dd>{formatNumber(p.spread_pct, 6)}%</dd></div>
+    <dl className="pair-metrics"><div><dt>Лот</dt><dd>{formatNumber(p.lot_quote, p.price_precision)} {p.quote_asset}</dd></div><div><dt>Спред</dt><dd>{formatNumber(p.spread_pct, 6)}%</dd></div>
       <div><dt>Зміщення</dt><dd>{formatNumber(p.order_offset_pct, 6)}%</dd></div><div><dt>Red line</dt><dd>{formatNumber(p.red_line_pct, 6)}%</dd></div>
       <div><dt>Ордери</dt><dd>{runtime.open_orders}</dd></div><div><dt>Пари</dt><dd>{p.order_pair_count} / {maximumPairs}</dd></div>
       <div><dt>Пауза</dt><dd>{p.pause_minutes} хв</dd></div></dl>
