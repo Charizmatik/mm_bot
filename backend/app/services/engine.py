@@ -11,7 +11,7 @@ from sqlalchemy.orm import selectinload
 
 from app.config import Settings
 from app.db import SessionLocal
-from app.exchanges.base import Exchange, Quote
+from app.exchanges.base import AssetBalance, Exchange, Quote
 from app.models import (
     CycleStatus,
     Event,
@@ -58,14 +58,16 @@ class MarketMakerEngine:
         self.quotes: dict[str, tuple[Quote, datetime]] = {}
         self._quote_received_monotonic: dict[str, float] = {}
         self.pair_balances: dict[str, tuple[Decimal, Decimal, datetime]] = {}
-        self._account_balance_cache: tuple[dict[str, Decimal], datetime] | None = None
+        self._account_balance_cache: tuple[dict[str, AssetBalance], datetime] | None = None
         self._balance_lock = asyncio.Lock()
+        self._order_placement_lock = asyncio.Lock()
         self._runner: asyncio.Task | None = None
         self._stream: asyncio.Task | None = None
         self._symbols: set[str] = set()
         self._stream_restart_requested = False
         self._stale_quote_symbols: set[str] = set()
         self._locks: dict[uuid.UUID, asyncio.Lock] = {}
+        self._pending_exchange_orders: dict[uuid.UUID, list[tuple[str, str]]] = {}
         self._stopping = False
 
     async def start(self) -> None:
@@ -106,20 +108,37 @@ class MarketMakerEngine:
         if not balance_item or (now - balance_item[2]).total_seconds() > self.settings.balance_refresh_seconds:
             balances, balances_at = await self._account_balances()
             self.pair_balances[pair.symbol] = (
-                balances.get(pair.base_asset, Decimal("0")),
-                balances.get(pair.quote_asset, Decimal("0")),
+                self._balance(balances, pair.base_asset).total,
+                self._balance(balances, pair.quote_asset).total,
                 balances_at,
             )
 
-    async def _account_balances(self) -> tuple[dict[str, Decimal], datetime]:
+    @staticmethod
+    def _balance(balances: dict[str, AssetBalance], asset: str) -> AssetBalance:
+        return balances.get(asset, AssetBalance(Decimal("0")))
+
+    def _invalidate_balance_cache(self) -> None:
+        self._account_balance_cache = None
+
+    async def _account_balances(
+        self, *, force: bool = False
+    ) -> tuple[dict[str, AssetBalance], datetime]:
         now = datetime.now(timezone.utc)
         cached = self._account_balance_cache
-        if cached and (now - cached[1]).total_seconds() < self.settings.balance_refresh_seconds:
+        if (
+            not force
+            and cached
+            and (now - cached[1]).total_seconds() < self.settings.balance_refresh_seconds
+        ):
             return cached
         async with self._balance_lock:
             cached = self._account_balance_cache
             now = datetime.now(timezone.utc)
-            if cached and (now - cached[1]).total_seconds() < self.settings.balance_refresh_seconds:
+            if (
+                not force
+                and cached
+                and (now - cached[1]).total_seconds() < self.settings.balance_refresh_seconds
+            ):
                 return cached
             balances = await self.exchange.balances()
             self._account_balance_cache = (balances, now)
@@ -170,18 +189,26 @@ class MarketMakerEngine:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                cleanup_failures = await self._cancel_pending_exchange_orders(pair_id)
                 diagnostic = describe_exception(exc)
+                if cleanup_failures:
+                    diagnostic += (
+                        "; FAILED TO CANCEL UNCOMMITTED ORDERS: "
+                        + ", ".join(cleanup_failures)
+                    )
                 logger.exception("Engine error while processing pair %s: %s", pair_id, diagnostic)
                 async with SessionLocal() as session:
                     pair = await session.get(PairConfig, pair_id)
                     if pair:
                         changed = pair.last_error != diagnostic
+                        pair.enabled = False
                         pair.status = PairStatus.ERROR
                         pair.last_error = diagnostic
                         if changed:
                             session.add(Event(
                                 pair_id=pair.id, level="error",
-                                kind="engine_error", message=diagnostic,
+                                kind="engine_error",
+                                message=f"Trading disabled after error: {diagnostic}",
                             ))
                         await session.commit()
 
@@ -205,10 +232,12 @@ class MarketMakerEngine:
 
             balances, balances_at = await self._account_balances()
             if balances:
-                base_free = balances.get(pair.base_asset, Decimal("0"))
-                quote_free = balances.get(pair.quote_asset, Decimal("0"))
-                self.pair_balances[pair.symbol] = (base_free, quote_free, balances_at)
-                if await self._apply_balance_controls(session, pair, open_cycles, base_free, quote_free):
+                base_total = self._balance(balances, pair.base_asset).total
+                quote_total = self._balance(balances, pair.quote_asset).total
+                self.pair_balances[pair.symbol] = (base_total, quote_total, balances_at)
+                if await self._apply_balance_controls(
+                    session, pair, open_cycles, base_total, quote_total
+                ):
                     await session.commit()
                     return
 
@@ -249,6 +278,24 @@ class MarketMakerEngine:
             if pair.status == PairStatus.ERROR:
                 pair.status = PairStatus.RUNNING
             await session.commit()
+            self._pending_exchange_orders.pop(pair_id, None)
+
+    async def _cancel_pending_exchange_orders(self, pair_id: uuid.UUID) -> list[str]:
+        pending = self._pending_exchange_orders.pop(pair_id, [])
+        failures: list[str] = []
+        for symbol, order_id in pending:
+            try:
+                await self.exchange.cancel(symbol, order_id)
+            except Exception:
+                failures.append(f"{symbol}:{order_id}")
+                logger.exception(
+                    "Failed to cancel uncommitted exchange order %s for %s",
+                    order_id,
+                    symbol,
+                )
+        if pending:
+            self._invalidate_balance_cache()
+        return failures
 
     async def _open_cycle(
         self,
@@ -266,44 +313,73 @@ class MarketMakerEngine:
         buy_qty, sell_qty = quantities(pair.lot_quote, prices, pair.quantity_precision)
         if buy_qty <= 0 or sell_qty <= 0:
             raise RuntimeError("lot is below quantity precision")
-        if not self.settings.dry_run:
-            balance_item = self.pair_balances.get(pair.symbol)
-            if not balance_item:
-                raise RuntimeError(f"balances unavailable for {pair.symbol}")
-            base_free, quote_free, _ = balance_item
-            if quote_free < pair.lot_quote:
-                raise RuntimeError(
-                    f"insufficient {pair.quote_asset}: need {pair.lot_quote}, available {quote_free}"
-                )
-            if base_free < sell_qty:
-                raise RuntimeError(
-                    f"insufficient {pair.base_asset}: need {sell_qty}, available {base_free}"
-                )
         cycle = TradeCycle(
             pair_id=pair.id,
             reference_bid=quote.bid,
             reference_ask=quote.ask,
             grid_slot=grid_slot,
+            orders=[],
         )
         session.add(cycle)
         await session.flush()
         placed: list[tuple[OrderSide, object, Decimal, Decimal, str]] = []
-        try:
-            for side, qty, price in (
-                (OrderSide.BUY, buy_qty, prices.buy), (OrderSide.SELL, sell_qty, prices.sell)
-            ):
-                client_id = f"mm-{cycle.id.hex[:16]}-{side.value.lower()}"
-                result = await self.exchange.place_limit(pair.symbol, side, qty, price, client_id)
-                placed.append((side, result, qty, price, client_id))
-        except Exception:
-            for _, result, _, _, _ in placed:
-                with contextlib.suppress(Exception):
-                    await self.exchange.cancel(pair.symbol, result.order_id)
-            raise
+        async with self._order_placement_lock:
+            if not self.settings.dry_run:
+                balances, _ = await self._account_balances(force=True)
+                base_free = self._balance(balances, pair.base_asset).free
+                quote_free = self._balance(balances, pair.quote_asset).free
+                buy_cost = buy_qty * prices.buy
+                if quote_free < buy_cost:
+                    raise RuntimeError(
+                        f"insufficient free {pair.quote_asset}: "
+                        f"need {buy_cost}, available {quote_free}"
+                    )
+                if base_free < sell_qty:
+                    raise RuntimeError(
+                        f"insufficient free {pair.base_asset}: "
+                        f"need {sell_qty}, available {base_free}"
+                    )
+            try:
+                for side, qty, price in (
+                    (OrderSide.BUY, buy_qty, prices.buy),
+                    (OrderSide.SELL, sell_qty, prices.sell),
+                ):
+                    client_id = f"mm-{cycle.id.hex[:16]}-{side.value.lower()}"
+                    result = await self.exchange.place_limit(
+                        pair.symbol, side, qty, price, client_id
+                    )
+                    placed.append((side, result, qty, price, client_id))
+                    self._pending_exchange_orders.setdefault(pair.id, []).append(
+                        (pair.symbol, result.order_id)
+                    )
+            except Exception:
+                for _, result, _, _, _ in placed:
+                    try:
+                        await self.exchange.cancel(pair.symbol, result.order_id)
+                    except Exception:
+                        logger.exception(
+                            "Failed to cancel partially placed order %s for %s",
+                            result.order_id,
+                            pair.symbol,
+                        )
+                    else:
+                        with contextlib.suppress(ValueError):
+                            self._pending_exchange_orders.get(pair.id, []).remove(
+                                (pair.symbol, result.order_id)
+                            )
+                self._invalidate_balance_cache()
+                raise
+            self._invalidate_balance_cache()
         for side, result, qty, price, client_id in placed:
-            session.add(Order(cycle_id=cycle.id, exchange_order_id=result.order_id,
-                              client_order_id=client_id, side=side, status=result.status,
-                              price=price, quantity=qty, executed_quantity=result.executed_quantity))
+            cycle.orders.append(Order(
+                exchange_order_id=result.order_id,
+                client_order_id=client_id,
+                side=side,
+                status=result.status,
+                price=price,
+                quantity=qty,
+                executed_quantity=result.executed_quantity,
+            ))
         session.add(Event(pair_id=pair.id, kind="orders_placed",
                           message=(f"Grid {grid_slot} ({placement}): BUY {buy_qty} @ {prices.buy}; "
                                    f"SELL {sell_qty} @ {prices.sell}")))
@@ -653,11 +729,15 @@ class MarketMakerEngine:
         return False
 
     async def _cancel_cycle_orders(self, pair: PairConfig, cycle: TradeCycle) -> None:
+        canceled_any = False
         for order in cycle.orders:
             if order.status in OPEN_ORDER_STATUSES:
                 result = await self.exchange.cancel(pair.symbol, order.exchange_order_id)
                 order.status = result.status
                 order.executed_quantity = result.executed_quantity
+                canceled_any = True
+        if canceled_any:
+            self._invalidate_balance_cache()
         cycle.status = CycleStatus.CANCELED
         cycle.closed_at = datetime.now(timezone.utc)
 

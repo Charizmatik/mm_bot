@@ -14,6 +14,16 @@ class Quote:
 
 
 @dataclass(frozen=True)
+class AssetBalance:
+    free: Decimal
+    locked: Decimal = Decimal("0")
+
+    @property
+    def total(self) -> Decimal:
+        return self.free + self.locked
+
+
+@dataclass(frozen=True)
 class ExchangeOrder:
     order_id: str
     client_order_id: str
@@ -45,7 +55,7 @@ QuoteHandler = Callable[[Quote], Awaitable[None]]
 
 class Exchange(ABC):
     @abstractmethod
-    async def balances(self) -> dict[str, Decimal]: ...
+    async def balances(self) -> dict[str, AssetBalance]: ...
 
     @abstractmethod
     async def place_limit(

@@ -10,7 +10,15 @@ from urllib.parse import urlencode
 import httpx
 import websockets
 
-from app.exchanges.base import Exchange, ExchangeFill, ExchangeOrder, ExchangeSymbol, Quote, QuoteHandler
+from app.exchanges.base import (
+    AssetBalance,
+    Exchange,
+    ExchangeFill,
+    ExchangeOrder,
+    ExchangeSymbol,
+    Quote,
+    QuoteHandler,
+)
 from app.exchanges.mexc_proto import parse_book_ticker
 from app.models import OrderSide, OrderStatus
 
@@ -114,9 +122,15 @@ class MexcExchange(Exchange):
 
         raise MexcError(f"MEXC {method} {path}: timestamp retry exhausted")
 
-    async def balances(self) -> dict[str, Decimal]:
+    async def balances(self) -> dict[str, AssetBalance]:
         data = await self._private("GET", "/api/v3/account", {})
-        return {item["asset"]: Decimal(item["free"]) for item in data.get("balances", [])}
+        return {
+            item["asset"]: AssetBalance(
+                free=Decimal(item["free"]),
+                locked=Decimal(item.get("locked", "0")),
+            )
+            for item in data.get("balances", [])
+        }
 
     @staticmethod
     def _normalize(data: dict) -> ExchangeOrder:

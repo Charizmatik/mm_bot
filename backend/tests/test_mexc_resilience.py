@@ -1,4 +1,5 @@
 import time
+from decimal import Decimal
 
 import httpx
 import pytest
@@ -37,7 +38,10 @@ async def test_private_request_resynchronizes_and_retries_timestamp_error() -> N
                     400,
                     json={"code": 700003, "msg": "Timestamp for this request is outside of the recvWindow."},
                 )
-            return httpx.Response(200, json={"balances": [{"asset": "USDT", "free": "12.5"}]})
+            return httpx.Response(
+                200,
+                json={"balances": [{"asset": "USDT", "free": "12.5", "locked": "3.25"}]},
+            )
         raise AssertionError(f"unexpected request: {request.url}")
 
     exchange = await _exchange_with_transport(handler)
@@ -46,7 +50,9 @@ async def test_private_request_resynchronizes_and_retries_timestamp_error() -> N
     finally:
         await exchange.close()
 
-    assert str(balances["USDT"]) == "12.5"
+    assert balances["USDT"].free == Decimal("12.5")
+    assert balances["USDT"].locked == Decimal("3.25")
+    assert balances["USDT"].total == Decimal("15.75")
     assert calls == ["/api/v3/time", "/api/v3/account", "/api/v3/time", "/api/v3/account"]
 
 

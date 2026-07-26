@@ -4,7 +4,15 @@ from decimal import Decimal
 
 import httpx
 
-from app.exchanges.base import Exchange, ExchangeFill, ExchangeOrder, ExchangeSymbol, Quote, QuoteHandler
+from app.exchanges.base import (
+    AssetBalance,
+    Exchange,
+    ExchangeFill,
+    ExchangeOrder,
+    ExchangeSymbol,
+    Quote,
+    QuoteHandler,
+)
 from app.exchanges.mexc import parse_symbols
 from app.models import OrderSide, OrderStatus
 
@@ -20,7 +28,7 @@ class PaperExchange(Exchange):
         self._quotes: dict[str, Quote] = {}
         self._closed = False
 
-    async def balances(self) -> dict[str, Decimal]:
+    async def balances(self) -> dict[str, AssetBalance]:
         if self.balance_source:
             return await self.balance_source.balances()
         return {}
