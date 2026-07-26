@@ -206,6 +206,78 @@ async def test_decrease_marks_farthest_grid_pair_for_retirement() -> None:
 
 
 @pytest.mark.asyncio
+async def test_replacement_above_neighbor_uses_minimum_adjacent_gap() -> None:
+    exchange = FakeExchange()
+    engine = MarketMakerEngine(exchange, Settings(dry_run=True))  # type: ignore[arg-type]
+    config = pair(2)
+    config.price_precision = 2
+    neighbor = open_cycle(0, "1920.07", "1922.97")
+    completed = open_cycle(1, "1923.39", "1926.29")
+    completed.status = CycleStatus.PROFITABLE
+    cycles = [neighbor, completed]
+
+    await engine._reconcile_grid(
+        FakeSession(),
+        config,
+        cycles,
+        Quote(config.symbol, Decimal("1924"), Decimal("1924.01")),
+    )
+
+    assert [item[2] for item in exchange.placed] == [
+        Decimal("1922.98"),
+        Decimal("1925.86"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_replacement_below_neighbor_uses_adjacent_boundary() -> None:
+    exchange = FakeExchange()
+    engine = MarketMakerEngine(exchange, Settings(dry_run=True))  # type: ignore[arg-type]
+    config = pair(2)
+    config.price_precision = 2
+    completed = open_cycle(-1, "1917.16", "1920.05")
+    completed.status = CycleStatus.PROFITABLE
+    neighbor = open_cycle(0, "1920.07", "1922.97")
+    cycles = [completed, neighbor]
+
+    await engine._reconcile_grid(
+        FakeSession(),
+        config,
+        cycles,
+        Quote(config.symbol, Decimal("1919"), Decimal("1919.01")),
+    )
+
+    assert [item[2] for item in exchange.placed] == [
+        Decimal("1917.16"),
+        Decimal("1920.05"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_adjacent_replacement_uses_smallest_maker_safe_gap() -> None:
+    exchange = FakeExchange()
+    engine = MarketMakerEngine(exchange, Settings(dry_run=True))  # type: ignore[arg-type]
+    config = pair(2)
+    config.price_precision = 2
+    neighbor = open_cycle(0, "1920.07", "1922.97")
+    completed = open_cycle(1, "1923.39", "1926.29")
+    completed.status = CycleStatus.PROFITABLE
+    cycles = [neighbor, completed]
+
+    await engine._reconcile_grid(
+        FakeSession(),
+        config,
+        cycles,
+        Quote(config.symbol, Decimal("1926"), Decimal("1926.01")),
+    )
+
+    assert [item[2] for item in exchange.placed] == [
+        Decimal("1923.13"),
+        Decimal("1926.01"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_new_cycle_has_initialized_orders_without_async_lazy_load() -> None:
     exchange = FakeExchange()
     engine = MarketMakerEngine(exchange, Settings(dry_run=True))  # type: ignore[arg-type]

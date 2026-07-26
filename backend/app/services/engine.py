@@ -25,8 +25,8 @@ from app.models import (
 )
 from app.services.accounting import AccountedFill, calculate_profit
 from app.services.pricing import (
-    Prices, adjacent_prices, balance_level, prices_are_marketable, quantities,
-    red_line_crossed, target_prices,
+    Prices, adjacent_prices, balance_level, closest_maker_adjacent_prices,
+    prices_are_marketable, quantities, red_line_crossed, target_prices,
 )
 from app.schemas import GRID_GAP_PCT
 
@@ -442,32 +442,78 @@ class MarketMakerEngine:
                 replacement_after = replacement_after.replace(tzinfo=timezone.utc)
             if replacement_after and replacement_after > now:
                 continue
-            prices = target_prices(
-                quote.bid, quote.ask, pair.spread_pct, pair.price_precision
-            )
             other_cycles = [
                 item
                 for item in latest_cycles
                 if item is not cycle and item.status == CycleStatus.OPEN
             ]
-            if self._prices_overlap_cycles(prices, other_cycles):
-                original = Prices(
-                    buy=next(order.price for order in cycle.orders if order.side == OrderSide.BUY),
-                    sell=next(order.price for order in cycle.orders if order.side == OrderSide.SELL),
+            lower_neighbor = max(
+                (
+                    item for item in other_cycles
+                    if item.grid_slot < cycle.grid_slot
+                ),
+                key=lambda item: item.grid_slot,
+                default=None,
+            )
+            upper_neighbor = min(
+                (
+                    item for item in other_cycles
+                    if item.grid_slot > cycle.grid_slot
+                ),
+                key=lambda item: item.grid_slot,
+                default=None,
+            )
+            placement = "replacement"
+            if lower_neighbor is not None:
+                boundary = next(
+                    order.price
+                    for order in lower_neighbor.orders
+                    if order.side == OrderSide.SELL
                 )
-                if (
-                    prices_are_marketable(original, quote.bid, quote.ask)
-                    or self._prices_overlap_cycles(original, other_cycles)
-                ):
-                    continue
-                prices = original
+                prices = closest_maker_adjacent_prices(
+                    OrderSide.SELL.value,
+                    boundary,
+                    quote.bid,
+                    quote.ask,
+                    pair.spread_pct,
+                    GRID_GAP_PCT,
+                    pair.price_precision,
+                )
+                placement = "replacement_adjacent"
+            elif upper_neighbor is not None:
+                boundary = next(
+                    order.price
+                    for order in upper_neighbor.orders
+                    if order.side == OrderSide.BUY
+                )
+                prices = closest_maker_adjacent_prices(
+                    OrderSide.BUY.value,
+                    boundary,
+                    quote.bid,
+                    quote.ask,
+                    pair.spread_pct,
+                    GRID_GAP_PCT,
+                    pair.price_precision,
+                )
+                placement = "replacement_adjacent"
+            else:
+                prices = target_prices(
+                    quote.bid, quote.ask, pair.spread_pct, pair.price_precision
+                )
+            if prices is None:
+                continue
+            if (
+                prices_are_marketable(prices, quote.bid, quote.ask)
+                or self._prices_overlap_cycles(prices, other_cycles)
+            ):
+                continue
             replacement = await self._open_cycle(
                 session,
                 pair,
                 quote,
                 grid_slot=cycle.grid_slot,
                 prices=prices,
-                placement="replacement",
+                placement=placement,
             )
             latest_cycles[latest_cycles.index(cycle)] = replacement
 

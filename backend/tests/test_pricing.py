@@ -3,9 +3,9 @@ from decimal import Decimal
 import pytest
 
 from app.services.pricing import (
-    Prices, adjacent_prices, balance_level, estimated_balance_threshold_price,
-    prices_are_marketable, quantities, red_line_crossed, red_line_trigger_price,
-    target_prices,
+    Prices, adjacent_prices, balance_level, closest_maker_adjacent_prices,
+    estimated_balance_threshold_price, prices_are_marketable, quantities,
+    red_line_crossed, red_line_trigger_price, target_prices,
 )
 
 
@@ -27,6 +27,34 @@ def test_lower_grid_cell_is_adjacent_without_overlap() -> None:
 def test_adjacent_price_uses_at_least_one_tick_when_gap_rounds_away() -> None:
     result = adjacent_prices("SELL", Decimal("100"), Decimal("0.15"), Decimal("0.001"), 2)
     assert result.buy == Decimal("100.01")
+
+
+def test_upper_adjacent_cell_moves_only_enough_to_remain_maker() -> None:
+    result = closest_maker_adjacent_prices(
+        "SELL",
+        Decimal("1922.97"),
+        Decimal("1926"),
+        Decimal("1926.01"),
+        Decimal("0.15"),
+        Decimal("0.001"),
+        2,
+    )
+
+    assert result == Prices(buy=Decimal("1923.13"), sell=Decimal("1926.01"))
+
+
+def test_adjacent_cell_waits_when_nonoverlap_and_maker_are_incompatible() -> None:
+    result = closest_maker_adjacent_prices(
+        "SELL",
+        Decimal("1922.97"),
+        Decimal("1922.97"),
+        Decimal("1922.98"),
+        Decimal("0.15"),
+        Decimal("0.001"),
+        2,
+    )
+
+    assert result is None
 
 
 def test_marketable_grid_cell_is_detected() -> None:

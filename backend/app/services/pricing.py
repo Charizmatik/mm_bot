@@ -57,6 +57,61 @@ def adjacent_prices(
     raise ValueError("filled_side must be BUY or SELL")
 
 
+def closest_maker_adjacent_prices(
+    filled_side: str,
+    fill_price: Decimal,
+    bid: Decimal,
+    ask: Decimal,
+    spread_pct: Decimal,
+    gap_pct: Decimal,
+    precision: int,
+) -> Prices | None:
+    """Keep an adjacent cell as close as possible while both orders remain makers."""
+    prices = adjacent_prices(filled_side, fill_price, spread_pct, gap_pct, precision)
+    if not prices_are_marketable(prices, bid, ask):
+        return prices
+
+    tick = Decimal(1).scaleb(-precision)
+    if filled_side == "SELL":
+        # The market moved above the desired cell. Lift only as much as
+        # necessary for its SELL to sit one tick above the current bid.
+        if prices.buy >= ask:
+            return None
+        factor = Decimal(1) + spread_pct / HUNDRED
+        buy = max(
+            prices.buy,
+            quantize((bid + tick) / factor, precision, ROUND_CEILING),
+        )
+        sell = quantize(buy * factor, precision, ROUND_DOWN)
+        while sell <= bid:
+            buy += tick
+            sell = quantize(buy * factor, precision, ROUND_DOWN)
+        if buy >= ask:
+            return None
+        return Prices(buy=buy, sell=sell)
+
+    if filled_side == "BUY":
+        # The market moved below the desired cell. Lower only as much as
+        # necessary for its BUY to sit one tick below the current ask.
+        if prices.sell <= bid:
+            return None
+        factor = Decimal(1) - spread_pct / HUNDRED
+        max_buy = quantize(ask, precision, ROUND_CEILING) - tick
+        sell = min(
+            prices.sell,
+            quantize((max_buy + tick) / factor, precision, ROUND_CEILING) - tick,
+        )
+        buy = quantize(sell * factor, precision, ROUND_DOWN)
+        while buy >= ask:
+            sell -= tick
+            buy = quantize(sell * factor, precision, ROUND_DOWN)
+        if sell <= bid:
+            return None
+        return Prices(buy=buy, sell=sell)
+
+    raise ValueError("filled_side must be BUY or SELL")
+
+
 def prices_are_marketable(prices: Prices, bid: Decimal, ask: Decimal) -> bool:
     return prices.buy >= ask or prices.sell <= bid
 
