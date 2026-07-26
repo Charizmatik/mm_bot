@@ -14,6 +14,7 @@ export type Runtime = {
   red_line: RedLine | null;
   base_free: string | null; quote_free: string | null; balance_updated_at: string | null; open_orders: number;
   active_order_pairs: number; retiring_order_pairs: number;
+  order_pairs: RuntimeOrderPair[];
 };
 
 export type ActiveOrder = {
@@ -21,7 +22,19 @@ export type ActiveOrder = {
 };
 
 export type RedLine = {
-  filled_side: 'BUY' | 'SELL'; reference_price: string; trigger_price: string; distance_pct: string | null;
+  filled_side: 'BUY' | 'SELL'; reference_price: string; trigger_price: string;
+  distance_price: string | null; distance_pct: string | null;
+};
+
+export type RuntimeOrder = {
+  id: string; side: 'BUY' | 'SELL'; status: string;
+  price: string; quantity: string; executed_quantity: string; execution_pct: string;
+  distance_price: string | null; distance_pct: string | null;
+};
+
+export type RuntimeOrderPair = {
+  cycle_id: string; grid_slot: number; retiring: boolean; successor_spawned: boolean;
+  opened_at: string; buy_order: RuntimeOrder; sell_order: RuntimeOrder; red_line: RedLine | null;
 };
 
 export type BotEvent = {

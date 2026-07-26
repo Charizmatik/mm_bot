@@ -18,7 +18,7 @@ from app.schemas import (
     ActiveOrderRead, AnalyticsPeriod, AnalyticsReport, EventPage, EventRead, FillRead, Health,
     OrderPage, OrderPairCountUpdate, OrderRead, PairCreate, PairRead,
     PairRuntime, PairUpdate, RedLineRead,
-    PairStatistics, ProfitBucket, Statistics,
+    PairStatistics, ProfitBucket, RuntimeOrderPairRead, RuntimeOrderRead, Statistics,
     SymbolRead, maximum_order_pairs,
 )
 from app.services.pricing import red_line_trigger_price
@@ -54,6 +54,22 @@ def order_distance_pct(side: OrderSide, market_price: Decimal | None, order_pric
     return max(distance, Decimal("0")) * Decimal("100") / market_price
 
 
+def order_distance_values(
+    side: OrderSide,
+    market_price: Decimal | None,
+    order_price: Decimal,
+) -> tuple[Decimal | None, Decimal | None]:
+    if market_price is None or market_price <= 0:
+        return None, None
+    distance = (
+        market_price - order_price
+        if side == OrderSide.BUY
+        else order_price - market_price
+    )
+    distance = max(distance, Decimal("0"))
+    return distance, distance * Decimal("100") / market_price
+
+
 def red_line_values(
     side: OrderSide,
     reference_price: Decimal,
@@ -70,6 +86,29 @@ def red_line_values(
         else trigger_price - market_price
     )
     return trigger_price, max(distance, Decimal("0")) * Decimal("100") / market_price
+
+
+def runtime_order(order: Order, market_price: Decimal | None) -> RuntimeOrderRead:
+    distance_price, distance_pct = order_distance_values(
+        order.side, market_price, order.price
+    )
+    if order.status not in {OrderStatus.NEW, OrderStatus.PARTIALLY_FILLED}:
+        distance_price = distance_pct = None
+    execution_pct = (
+        order.executed_quantity * Decimal("100") / order.quantity
+        if order.quantity else Decimal("0")
+    )
+    return RuntimeOrderRead(
+        id=order.id,
+        side=order.side,
+        status=order.status,
+        price=order.price,
+        quantity=order.quantity,
+        executed_quantity=order.executed_quantity,
+        execution_pct=execution_pct,
+        distance_price=distance_price,
+        distance_pct=distance_pct,
+    )
 
 
 async def _exchange_symbols(request: Request) -> list:
@@ -147,23 +186,62 @@ async def list_pairs(request: Request, session: AsyncSession = Depends(get_sessi
         sell_order = min(sells, key=lambda order: order.price, default=None)
         red_line = None
         red_line_candidates = []
+        runtime_order_pairs = []
         for cycle in cycles:
-            cycle_filled = [order for order in cycle.orders if order.status == OrderStatus.FILLED]
-            if len(cycle_filled) != 1:
+            cycle_buy = next(
+                (order for order in cycle.orders if order.side == OrderSide.BUY),
+                None,
+            )
+            cycle_sell = next(
+                (order for order in cycle.orders if order.side == OrderSide.SELL),
+                None,
+            )
+            if not cycle_buy or not cycle_sell:
                 continue
-            winner = cycle_filled[0]
-            market_price = (
-                quote.bid if quote and winner.side == OrderSide.BUY
-                else quote.ask if quote else None
-            )
-            trigger_price, distance_pct = red_line_values(
-                winner.side, winner.price, market_price, pair.red_line_pct
-            )
-            red_line_candidates.append(RedLineRead(
-                filled_side=winner.side,
-                reference_price=winner.price,
-                trigger_price=trigger_price,
-                distance_pct=distance_pct,
+            cycle_filled = [order for order in cycle.orders if order.status == OrderStatus.FILLED]
+            cycle_red_line = None
+            if len(cycle_filled) != 1:
+                pass
+            else:
+                winner = cycle_filled[0]
+                market_price = (
+                    quote.bid if quote and winner.side == OrderSide.BUY
+                    else quote.ask if quote else None
+                )
+                trigger_price, distance_pct = red_line_values(
+                    winner.side, winner.price, market_price, pair.red_line_pct
+                )
+                distance_price = (
+                    max(
+                        market_price - trigger_price
+                        if winner.side == OrderSide.BUY
+                        else trigger_price - market_price,
+                        Decimal("0"),
+                    )
+                    if market_price is not None
+                    else None
+                )
+                cycle_red_line = RedLineRead(
+                    filled_side=winner.side,
+                    reference_price=winner.price,
+                    trigger_price=trigger_price,
+                    distance_price=distance_price,
+                    distance_pct=distance_pct,
+                )
+                red_line_candidates.append(cycle_red_line)
+            runtime_order_pairs.append(RuntimeOrderPairRead(
+                cycle_id=cycle.id,
+                grid_slot=cycle.grid_slot,
+                retiring=cycle.retiring,
+                successor_spawned=cycle.successor_spawned,
+                opened_at=cycle.opened_at,
+                buy_order=runtime_order(
+                    cycle_buy, quote.bid if quote else None
+                ),
+                sell_order=runtime_order(
+                    cycle_sell, quote.ask if quote else None
+                ),
+                red_line=cycle_red_line,
             ))
         if red_line_candidates:
             red_line = min(
@@ -190,7 +268,11 @@ async def list_pairs(request: Request, session: AsyncSession = Depends(get_sessi
                                   balance_updated_at=balance_updated_at,
                                   open_orders=len(active_orders),
                                   active_order_pairs=sum(not cycle.retiring for cycle in cycles),
-                                  retiring_order_pairs=sum(cycle.retiring for cycle in cycles)))
+                                  retiring_order_pairs=sum(cycle.retiring for cycle in cycles),
+                                  order_pairs=sorted(
+                                      runtime_order_pairs,
+                                      key=lambda item: item.grid_slot,
+                                  )))
     return result
 
 

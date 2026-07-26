@@ -62,10 +62,11 @@ def prices_are_marketable(prices: Prices, bid: Decimal, ask: Decimal) -> bool:
 
 
 def quantities(lot_quote: Decimal, prices: Prices, precision: int) -> tuple[Decimal, Decimal]:
-    return (
-        quantize(lot_quote / prices.buy, precision, ROUND_DOWN),
-        quantize(lot_quote / prices.sell, precision, ROUND_DOWN),
-    )
+    # Both sides of one pair must trade exactly the same base quantity.
+    # Derive it from the more expensive side so neither order exceeds the
+    # configured quote-asset lot after rounding.
+    quantity = quantize(lot_quote / max(prices.buy, prices.sell), precision, ROUND_DOWN)
+    return quantity, quantity
 
 
 def red_line_trigger_price(side: str, fill_price: Decimal, red_line_pct: Decimal) -> Decimal:

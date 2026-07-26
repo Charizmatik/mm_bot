@@ -72,7 +72,31 @@ class RedLineRead(BaseModel):
     filled_side: OrderSide
     reference_price: Decimal
     trigger_price: Decimal
+    distance_price: Decimal | None = None
     distance_pct: Decimal | None = None
+
+
+class RuntimeOrderRead(BaseModel):
+    id: uuid.UUID
+    side: OrderSide
+    status: OrderStatus
+    price: Decimal
+    quantity: Decimal
+    executed_quantity: Decimal
+    execution_pct: Decimal
+    distance_price: Decimal | None = None
+    distance_pct: Decimal | None = None
+
+
+class RuntimeOrderPairRead(BaseModel):
+    cycle_id: uuid.UUID
+    grid_slot: int
+    retiring: bool
+    successor_spawned: bool
+    opened_at: datetime
+    buy_order: RuntimeOrderRead
+    sell_order: RuntimeOrderRead
+    red_line: RedLineRead | None = None
 
 
 class PairRuntime(BaseModel):
@@ -89,6 +113,7 @@ class PairRuntime(BaseModel):
     open_orders: int = 0
     active_order_pairs: int = 0
     retiring_order_pairs: int = 0
+    order_pairs: list[RuntimeOrderPairRead] = Field(default_factory=list)
 
 
 class OrderPairCountUpdate(BaseModel):

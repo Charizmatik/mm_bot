@@ -34,9 +34,9 @@ def test_marketable_grid_cell_is_detected() -> None:
     assert not prices_are_marketable(Prices(Decimal("99"), Decimal("102")), Decimal("100"), Decimal("101"))
 
 
-def test_quantities_are_quote_lots() -> None:
+def test_order_pair_quantities_are_identical_and_do_not_exceed_quote_lot() -> None:
     buy, sell = quantities(Decimal("100"), Prices(Decimal("50"), Decimal("100")), 4)
-    assert buy == Decimal("2.0000")
+    assert buy == Decimal("1.0000")
     assert sell == Decimal("1.0000")
 
 

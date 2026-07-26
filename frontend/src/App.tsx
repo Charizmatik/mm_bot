@@ -1,7 +1,10 @@
 import { FormEvent, KeyboardEvent, useCallback, useEffect, useState } from 'react';
 import { api } from './api';
 import AnalyticsPage from './Analytics';
-import type { BotEvent, ExchangeSymbol, OrderDetails, PairForm, Runtime, Statistics } from './types';
+import type {
+  BotEvent, ExchangeSymbol, OrderDetails, Pair, PairForm, Runtime, RuntimeOrder,
+  RuntimeOrderPair, Statistics,
+} from './types';
 
 const initial: PairForm = {
   symbol: 'BTCUSDT', base_asset: 'BTC', quote_asset: 'USDT', lot_quote: '100', spread_pct: '0.15',
@@ -202,7 +205,7 @@ function Dashboard() {
 
     {showForm && <form className="create-form" onSubmit={submit}>
       <h3>{editingId ? 'Редагування торгової пари' : 'Нова торгова пара'}</h3>
-      {editingId && <p className="form-note">ІРБ обчислюється ботом автоматично й не є параметром конфігурації.</p>}
+      {editingId && <p className="form-note">Кількість пар можна змінювати без зупинки кнопками на картці.</p>}
       <div className="form-grid">
         <SymbolPicker value={form.symbol} onSelect={item => setForm({...form, symbol: item.symbol,
           base_asset: item.base_asset, quote_asset: item.quote_asset,
@@ -363,6 +366,51 @@ function Field({label, value, onChange, type='text', readOnly=false}: {label: st
     readOnly={readOnly} className={readOnly ? 'readonly' : ''} onChange={e => onChange?.(e.target.value)} /></label>;
 }
 
+function RuntimeOrderCard({order, pair}: {order: RuntimeOrder; pair: Pair}) {
+  const open = order.status === 'NEW' || order.status === 'PARTIALLY_FILLED';
+  const remaining = Math.max(Number(order.quantity) - Number(order.executed_quantity), 0);
+  return <div className={`runtime-order ${order.side.toLowerCase()} ${order.status.toLowerCase()}`}>
+    <div className="runtime-order-head"><b>{order.side}</b>
+      <span>{orderLabels[order.status] || order.status}</span></div>
+    <strong>{formatNumber(order.price, pair.price_precision, true)}</strong>
+    <dl>
+      <div><dt>Обсяг</dt><dd>{formatNumber(order.quantity, pair.quantity_precision)} {pair.base_asset}</dd></div>
+      <div><dt>Залишилось</dt><dd>{formatNumber(remaining, pair.quantity_precision)} {pair.base_asset}</dd></div>
+    </dl>
+    {open ? <div className="order-distance"><span>До виконання</span>
+      <b>{order.distance_price === null ? '—' :
+        `${formatNumber(order.distance_price, pair.price_precision, true)} · ${formatNumber(order.distance_pct, 4)}%`}</b>
+    </div> : <div className="order-distance complete"><span>Виконання</span>
+      <b>{formatNumber(order.execution_pct, 2)}%</b></div>}
+  </div>;
+}
+
+function RuntimePairCard({item, pair}: {item: RuntimeOrderPair; pair: Pair}) {
+  const filledSide = item.red_line?.filled_side;
+  const slot = item.grid_slot > 0 ? `+${item.grid_slot}` : String(item.grid_slot);
+  const state = filledSide
+    ? `${filledSide} виконано · очікуємо ${filledSide === 'BUY' ? 'SELL' : 'BUY'} або red line`
+    : 'Обидва ордери очікують виконання';
+  return <article className={`runtime-pair ${item.red_line ? 'has-red-line' : ''} ${item.retiring ? 'retiring' : ''}`}>
+    <header><div><span>РІВЕНЬ {slot}</span><strong>{state}</strong></div>
+      <div className="runtime-pair-flags">
+        {item.successor_spawned && <em>Наступний рівень створено</em>}
+        {item.retiring && <em className="retiring">Доторговується без перевиставлення</em>}
+      </div></header>
+    <div className="runtime-orders">
+      <RuntimeOrderCard order={item.buy_order} pair={pair} />
+      <RuntimeOrderCard order={item.sell_order} pair={pair} />
+    </div>
+    {item.red_line && <div className="cycle-red-line">
+      <div><span>RED LINE ПІСЛЯ {item.red_line.filled_side}</span>
+        <small>Рух {item.red_line.filled_side === 'BUY' ? 'вниз ↓' : 'вгору ↑'}</small></div>
+      <div><span>Поріг</span><b>{formatNumber(item.red_line.trigger_price, pair.price_precision, true)}</b></div>
+      <div><span>Залишилось до red line</span><b>{item.red_line.distance_price === null ? '—' :
+        `${formatNumber(item.red_line.distance_price, pair.price_precision, true)} · ${formatNumber(item.red_line.distance_pct, 4)}%`}</b></div>
+    </div>}
+  </article>;
+}
+
 function PairCard({runtime, busy, onAct, onEdit, onPairCount}: {
   runtime: Runtime; busy: string; onAct: (id:string, a:'start'|'stop')=>void;
   onEdit:(r:Runtime)=>void | Promise<void>;
@@ -388,21 +436,8 @@ function PairCard({runtime, busy, onAct, onEdit, onPairCount}: {
   return <article className={`pair-card status-${p.status}`}>
     <div className="pair-head"><div><span className="exchange">{p.exchange}</span><h3>{p.base_asset}<em>/{p.quote_asset}</em></h3></div>
       <span className="status"><i />{labels[p.status] || p.status}</span></div>
-    <div className="quote"><div><span>BID</span><strong>{formatNumber(runtime.bid, p.price_precision, true)}</strong>
-      {runtime.bid_order && <small><b>BUY {formatNumber(runtime.bid_order.price, p.price_precision, true)}</b>
-        <em>До BUY {runtime.bid_order.distance_pct === null ? '—' :
-          `${formatNumber(runtime.bid_order.distance_pct, 4)}%`}</em></small>}</div>
-      <div><span>ASK</span><strong>{formatNumber(runtime.ask, p.price_precision, true)}</strong>
-        {runtime.ask_order && <small><b>SELL {formatNumber(runtime.ask_order.price, p.price_precision, true)}</b>
-          <em>До SELL {runtime.ask_order.distance_pct === null ? '—' :
-            `${formatNumber(runtime.ask_order.distance_pct, 4)}%`}</em></small>}</div></div>
-    {runtime.red_line && <div className="red-line-status">
-      <div><span>RED LINE · {runtime.red_line.filled_side} виконано</span>
-        <small>Ринок має піти {runtime.red_line.filled_side === 'BUY' ? 'вниз ↓' : 'вгору ↑'}</small></div>
-      <div><span>Поріг</span><b>{formatNumber(runtime.red_line.trigger_price, p.price_precision, true)}</b></div>
-      <div><span>До спрацювання</span><b>{runtime.red_line.distance_pct === null ? '—' :
-        `${formatNumber(runtime.red_line.distance_pct, 4)}%`}</b></div>
-    </div>}
+    <div className="quote"><div><span>РИНКОВИЙ BID</span><strong>{formatNumber(runtime.bid, p.price_precision, true)}</strong></div>
+      <div><span>РИНКОВИЙ ASK</span><strong>{formatNumber(runtime.ask, p.price_precision, true)}</strong></div></div>
     <div className="irb-row"><span>Пари ордерів · активні {runtime.active_order_pairs}
       {runtime.retiring_order_pairs > 0 ? ` · доторговуються ${runtime.retiring_order_pairs}` : ''}</span><div>
       <button className="secondary" type="button" disabled={p.order_pair_count <= 1 || busy.startsWith(p.id)}
@@ -412,6 +447,12 @@ function PairCard({runtime, busy, onAct, onEdit, onPairCount}: {
         disabled={p.order_pair_count >= maximumPairs || busy.startsWith(p.id)}
         onClick={() => onPairCount(p.id, p.order_pair_count + 1)}>+</button>
     </div></div>
+    <div className="runtime-pairs">
+      {runtime.order_pairs.length === 0 ? <div className="runtime-pairs-empty">
+        Активні ордери ще не виставлені.
+      </div> : runtime.order_pairs.map(item =>
+        <RuntimePairCard key={item.cycle_id} item={item} pair={p} />)}
+    </div>
     <div className="balance-grid">
       <div className={baseWarning ? 'warn' : ''}><span>Баланс {p.base_asset}</span><strong>{formatNumber(runtime.base_free, p.quantity_precision)}</strong>
         {baseValue !== null && <div className="valuation">≈ {formatNumber(baseValue, p.price_precision)} {p.quote_asset}

@@ -4,9 +4,12 @@ from decimal import Decimal
 import pytest
 
 from app.api import (
-    _next_period, _period_start, order_distance_pct, red_line_values, reported_cycle_profit, stop_pair,
+    _next_period, _period_start, order_distance_pct, order_distance_values,
+    red_line_values, reported_cycle_profit, runtime_order, stop_pair,
 )
-from app.models import CycleStatus, Event, OrderSide, PairConfig, PairStatus, TradeCycle
+from app.models import (
+    CycleStatus, Event, Order, OrderSide, OrderStatus, PairConfig, PairStatus, TradeCycle,
+)
 from app.schemas import PairCreate, maximum_order_pairs
 from app.services.engine import describe_exception
 
@@ -44,6 +47,48 @@ def test_order_distance_pct_counts_down_to_execution_price(
 
 def test_order_distance_pct_is_unavailable_without_market_price() -> None:
     assert order_distance_pct(OrderSide.BUY, None, Decimal("99.5")) is None
+
+
+def test_order_distance_values_include_price_and_percentage() -> None:
+    distance, percentage = order_distance_values(
+        OrderSide.SELL, Decimal("100"), Decimal("100.75")
+    )
+    assert distance == Decimal("0.75")
+    assert percentage == Decimal("0.75")
+
+
+def test_runtime_order_reports_remaining_distance_for_open_order() -> None:
+    order = Order(
+        id=uuid.uuid4(),
+        side=OrderSide.BUY,
+        status=OrderStatus.PARTIALLY_FILLED,
+        price=Decimal("99"),
+        quantity=Decimal("2"),
+        executed_quantity=Decimal("0.5"),
+    )
+
+    result = runtime_order(order, Decimal("100"))
+
+    assert result.execution_pct == Decimal("25")
+    assert result.distance_price == Decimal("1")
+    assert result.distance_pct == Decimal("1")
+
+
+def test_runtime_order_hides_distance_after_fill() -> None:
+    order = Order(
+        id=uuid.uuid4(),
+        side=OrderSide.SELL,
+        status=OrderStatus.FILLED,
+        price=Decimal("101"),
+        quantity=Decimal("1"),
+        executed_quantity=Decimal("1"),
+    )
+
+    result = runtime_order(order, Decimal("100"))
+
+    assert result.distance_price is None
+    assert result.distance_pct is None
+    assert result.execution_pct == Decimal("100")
 
 
 @pytest.mark.parametrize(("side", "market_price", "expected_trigger", "expected_distance"), [
