@@ -63,6 +63,14 @@ class SafeCancelExchange(FakeExchange):
             executed_quantity=Decimal("0"),
         )
 
+    async def order(self, symbol, order_id):
+        return ExchangeOrder(
+            order_id=order_id,
+            client_order_id="",
+            status=OrderStatus.NEW,
+            executed_quantity=Decimal("0"),
+        )
+
 
 class ErrorSession:
     def __init__(self, config: PairConfig) -> None:
@@ -234,6 +242,34 @@ async def test_cycle_with_all_orders_canceled_on_exchange_is_closed() -> None:
     assert cycle.closed_at is not None
     event = next(value for value in session.added if isinstance(value, Event))
     assert event.kind == "orders_canceled"
+
+
+@pytest.mark.asyncio
+async def test_one_canceled_order_cancels_the_remaining_pair_order() -> None:
+    exchange = SafeCancelExchange()
+    engine = MarketMakerEngine(exchange, Settings(dry_run=True))  # type: ignore[arg-type]
+    config = pair(2)
+    cycle = open_cycle(0, "99.850", "100.000")
+    buy = next(order for order in cycle.orders if order.side == OrderSide.BUY)
+    sell = next(order for order in cycle.orders if order.side == OrderSide.SELL)
+    buy.status = OrderStatus.NEW
+    sell.status = OrderStatus.CANCELED
+    session = FakeSession()
+
+    await engine._update_cycle(
+        session,
+        config,
+        cycle,
+        [cycle],
+        Quote(config.symbol, Decimal("100.001"), Decimal("100.002")),
+    )
+
+    assert exchange.canceled == [(config.symbol, buy.exchange_order_id)]
+    assert buy.status == OrderStatus.CANCELED
+    assert cycle.status == CycleStatus.CANCELED
+    event = next(value for value in session.added if isinstance(value, Event))
+    assert event.kind == "orders_canceled"
+    assert "remaining order was canceled too" in event.message
 
 
 @pytest.mark.asyncio

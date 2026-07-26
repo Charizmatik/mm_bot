@@ -636,14 +636,25 @@ class MarketMakerEngine:
                                        f"{pair.quote_asset}")))
             return
 
-        canceled = [order for order in cycle.orders if order.status in {OrderStatus.CANCELED, OrderStatus.EXPIRED}]
-        if not filled and not open_orders and canceled:
-            cycle.status = CycleStatus.CANCELED
-            cycle.closed_at = datetime.now(timezone.utc)
+        canceled = [
+            order
+            for order in cycle.orders
+            if order.status in {
+                OrderStatus.CANCELED,
+                OrderStatus.EXPIRED,
+                OrderStatus.REJECTED,
+            }
+        ]
+        if not filled and canceled:
+            await self._cancel_cycle_orders(pair, cycle)
             session.add(Event(
                 pair_id=pair.id,
+                level="warning",
                 kind="orders_canceled",
-                message=f"Grid {cycle.grid_slot}: all orders canceled on exchange",
+                message=(
+                    f"Grid {cycle.grid_slot}: incomplete pair canceled; "
+                    "the remaining order was canceled too"
+                ),
             ))
             return
         if len(filled) == 1 and (open_orders or canceled):
