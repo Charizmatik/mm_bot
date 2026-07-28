@@ -29,7 +29,8 @@ export type RedLine = {
 };
 
 export type RuntimeOrder = {
-  id: string; side: 'BUY' | 'SELL'; status: string;
+  id: string; exchange_order_id: string; client_order_id: string;
+  side: 'BUY' | 'SELL'; status: string;
   price: string; quantity: string; executed_quantity: string; execution_pct: string;
   distance_price: string | null; distance_pct: string | null;
 };

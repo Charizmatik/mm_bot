@@ -78,6 +78,8 @@ class RedLineRead(BaseModel):
 
 class RuntimeOrderRead(BaseModel):
     id: uuid.UUID
+    exchange_order_id: str
+    client_order_id: str
     side: OrderSide
     status: OrderStatus
     price: Decimal

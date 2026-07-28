@@ -60,6 +60,8 @@ def test_order_distance_values_include_price_and_percentage() -> None:
 def test_runtime_order_reports_remaining_distance_for_open_order() -> None:
     order = Order(
         id=uuid.uuid4(),
+        exchange_order_id="exchange-order-1",
+        client_order_id="client-order-1",
         side=OrderSide.BUY,
         status=OrderStatus.PARTIALLY_FILLED,
         price=Decimal("99"),
@@ -70,6 +72,8 @@ def test_runtime_order_reports_remaining_distance_for_open_order() -> None:
     result = runtime_order(order, Decimal("100"))
 
     assert result.execution_pct == Decimal("25")
+    assert result.exchange_order_id == "exchange-order-1"
+    assert result.client_order_id == "client-order-1"
     assert result.distance_price == Decimal("1")
     assert result.distance_pct == Decimal("1")
 
@@ -77,6 +81,8 @@ def test_runtime_order_reports_remaining_distance_for_open_order() -> None:
 def test_runtime_order_hides_distance_after_fill() -> None:
     order = Order(
         id=uuid.uuid4(),
+        exchange_order_id="exchange-order-2",
+        client_order_id="client-order-2",
         side=OrderSide.SELL,
         status=OrderStatus.FILLED,
         price=Decimal("101"),

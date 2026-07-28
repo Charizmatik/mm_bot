@@ -405,6 +405,12 @@ function RuntimeOrderCard({order, pair}: {order: RuntimeOrder; pair: Pair}) {
       <div><dt>Обсяг</dt><dd>{formatNumber(order.quantity, pair.quantity_precision)} {pair.base_asset}</dd></div>
       <div><dt>Залишилось</dt><dd>{formatNumber(remaining, pair.quantity_precision)} {pair.base_asset}</dd></div>
     </dl>
+    <div className="runtime-order-ids">
+      <span>Exchange ID</span>
+      <code title={order.exchange_order_id}>{order.exchange_order_id}</code>
+      <span>Client ID</span>
+      <code title={order.client_order_id}>{order.client_order_id}</code>
+    </div>
     {open ? <div className="order-distance"><span>До виконання</span>
       <b>{order.distance_price === null ? '—' :
         `${formatNumber(order.distance_price, pair.price_precision, true)} · ${formatNumber(order.distance_pct, 4)}%`}</b>

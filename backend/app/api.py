@@ -100,6 +100,8 @@ def runtime_order(order: Order, market_price: Decimal | None) -> RuntimeOrderRea
     )
     return RuntimeOrderRead(
         id=order.id,
+        exchange_order_id=order.exchange_order_id,
+        client_order_id=order.client_order_id,
         side=order.side,
         status=order.status,
         price=order.price,

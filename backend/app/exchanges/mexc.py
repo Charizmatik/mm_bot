@@ -18,12 +18,17 @@ from app.exchanges.base import (
     ExchangeSymbol,
     Quote,
     QuoteHandler,
+    TransientExchangeError,
 )
 from app.exchanges.mexc_proto import parse_book_ticker
 from app.models import OrderSide, OrderStatus
 
 
 class MexcError(RuntimeError):
+    pass
+
+
+class MexcTransientError(TransientExchangeError, MexcError):
     pass
 
 
@@ -92,9 +97,20 @@ class MexcExchange(Exchange):
                 and time.monotonic() - self._time_synced_at < self.time_sync_interval_seconds
             ):
                 return
-            started_ms = time.time_ns() // 1_000_000
-            response = await self.client.get("/api/v3/time")
-            response.raise_for_status()
+            for attempt in range(3):
+                started_ms = time.time_ns() // 1_000_000
+                try:
+                    response = await self.client.get("/api/v3/time")
+                    response.raise_for_status()
+                except httpx.TransportError as exc:
+                    if attempt < 2:
+                        await asyncio.sleep(0.25 * (attempt + 1))
+                        continue
+                    raise MexcTransientError(
+                        f"MEXC GET /api/v3/time failed after 3 attempts: "
+                        f"{type(exc).__name__}: {exc}"
+                    ) from exc
+                break
             finished_ms = time.time_ns() // 1_000_000
             server_time_ms = int(response.json()["serverTime"])
             self._time_offset_ms = server_time_ms - ((started_ms + finished_ms) // 2)
@@ -103,10 +119,25 @@ class MexcExchange(Exchange):
 
     async def _private(self, method: str, path: str, params: dict) -> dict:
         await self._sync_server_time()
-        for attempt in range(2):
-            response = await self.client.request(
-                method, path, params=self._signed(params), headers={"X-MEXC-APIKEY": self.api_key}
-            )
+        transport_attempts = 3 if method == "GET" else 1
+        transport_attempt = 0
+        timestamp_retried = False
+        while True:
+            try:
+                response = await self.client.request(
+                    method, path, params=self._signed(params),
+                    headers={"X-MEXC-APIKEY": self.api_key},
+                )
+            except httpx.TransportError as exc:
+                transport_attempt += 1
+                if transport_attempt < transport_attempts:
+                    await asyncio.sleep(0.25 * transport_attempt)
+                    continue
+                raise MexcTransientError(
+                    f"MEXC {method} {path} failed after {transport_attempts} "
+                    f"attempt{'s' if transport_attempts != 1 else ''}: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
             if not response.is_error:
                 return response.json()
 
@@ -114,13 +145,12 @@ class MexcExchange(Exchange):
                 error_code = response.json().get("code")
             except (ValueError, AttributeError):
                 error_code = None
-            if error_code == 700003 and attempt == 0:
+            if error_code == 700003 and not timestamp_retried:
+                timestamp_retried = True
                 logger.warning("MEXC rejected %s %s timestamp; resynchronizing and retrying", method, path)
                 await self._sync_server_time(force=True)
                 continue
             raise MexcError(f"MEXC {method} {path} {response.status_code}: {response.text[:300]}")
-
-        raise MexcError(f"MEXC {method} {path}: timestamp retry exhausted")
 
     async def balances(self) -> dict[str, AssetBalance]:
         data = await self._private("GET", "/api/v3/account", {})
@@ -149,11 +179,33 @@ class MexcExchange(Exchange):
     async def place_limit(
         self, symbol: str, side: OrderSide, quantity: Decimal, price: Decimal, client_order_id: str
     ) -> ExchangeOrder:
-        data = await self._private("POST", "/api/v3/order", {
-            "symbol": symbol, "side": side.value, "type": "LIMIT_MAKER",
-            "quantity": format(quantity, "f"), "price": format(price, "f"),
-            "newClientOrderId": client_order_id,
-        })
+        try:
+            data = await self._private("POST", "/api/v3/order", {
+                "symbol": symbol, "side": side.value, "type": "LIMIT_MAKER",
+                "quantity": format(quantity, "f"), "price": format(price, "f"),
+                "newClientOrderId": client_order_id,
+            })
+        except MexcTransientError as placement_error:
+            # The exchange may have accepted the order even when its response
+            # timed out. Never submit the POST blindly a second time.
+            for attempt in range(3):
+                try:
+                    data = await self._private("GET", "/api/v3/order", {
+                        "symbol": symbol,
+                        "origClientOrderId": client_order_id,
+                    })
+                except MexcError as lookup_error:
+                    if "-2011" in str(lookup_error) and attempt < 2:
+                        await asyncio.sleep(0.25 * (attempt + 1))
+                        continue
+                    raise MexcTransientError(
+                        f"MEXC POST /api/v3/order response was lost; recovery "
+                        f"lookup failed for clientOrderId={client_order_id}"
+                    ) from lookup_error
+                else:
+                    break
+            else:
+                raise placement_error
         return self._normalize(data)
 
     async def order(self, symbol: str, order_id: str) -> ExchangeOrder:

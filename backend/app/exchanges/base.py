@@ -6,6 +6,10 @@ from decimal import Decimal
 from app.models import OrderSide, OrderStatus
 
 
+class TransientExchangeError(RuntimeError):
+    """A temporary exchange transport failure that is safe to retry later."""
+
+
 @dataclass(frozen=True)
 class Quote:
     symbol: str

@@ -5,7 +5,7 @@ from decimal import Decimal
 import pytest
 
 from app.config import Settings
-from app.exchanges.base import AssetBalance, ExchangeOrder, Quote
+from app.exchanges.base import AssetBalance, ExchangeOrder, Quote, TransientExchangeError
 from app.models import (
     CycleStatus, Event, Order, OrderSide, OrderStatus, PairConfig, PairStatus,
     TradeCycle,
@@ -464,3 +464,30 @@ async def test_engine_error_cancels_uncommitted_orders_and_disables_pair(
     assert session.committed
     event = next(value for value in session.added if isinstance(value, Event))
     assert "Trading disabled after error" in event.message
+
+
+@pytest.mark.asyncio
+async def test_temporary_exchange_error_keeps_pair_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exchange = SafeCancelExchange()
+    engine = MarketMakerEngine(exchange, Settings(dry_run=False))  # type: ignore[arg-type]
+    config = pair(1)
+    config.enabled = True
+    config.status = PairStatus.RUNNING
+    session = ErrorSession(config)
+
+    async def fail_processing(pair_id):
+        raise TransientExchangeError("MEXC GET /api/v3/order timed out")
+
+    engine._process = fail_processing  # type: ignore[method-assign]
+    monkeypatch.setattr("app.services.engine.SessionLocal", lambda: session)
+
+    await engine._process_safe(config.id)
+
+    assert config.enabled
+    assert config.status == PairStatus.RUNNING
+    assert config.last_error and "timed out" in config.last_error
+    assert exchange.canceled == []
+    event = next(value for value in session.added if isinstance(value, Event))
+    assert event.kind == "exchange_timeout"

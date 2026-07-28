@@ -80,6 +80,9 @@ th { color:#697693; font:500 10px DM Mono; text-transform:uppercase; } tbody tr:
 .runtime-order-head span { color:#7885a3; font-size:9px; text-align:right; }
 .runtime-order>strong { display:block; margin:7px 0 9px; font:500 15px DM Mono; }
 .runtime-order dl { grid-template-columns:1fr 1fr; gap:8px; margin:0 0 9px; }.runtime-order dt { font-size:8px; }.runtime-order dd { font-size:9px; }
+.runtime-order-ids { display:grid; grid-template-columns:auto minmax(0,1fr); gap:4px 8px; margin:0 0 9px; padding:7px 8px; border:1px solid #202941; border-radius:7px; background:#080d19; }
+.runtime-order-ids span { color:#657393; font:500 8px DM Mono,monospace; text-transform:uppercase; }
+.runtime-order-ids code { overflow:hidden; color:#aeb9d3; font:500 9px DM Mono,monospace; text-overflow:ellipsis; white-space:nowrap; user-select:all; }
 .order-distance { display:flex; justify-content:space-between; gap:8px; padding-top:8px; border-top:1px solid #202941; }
 .order-distance span { color:#687694; font-size:9px; }.order-distance b { color:#d5dbea; font:500 9px DM Mono; text-align:right; }
 .order-distance.complete b { color:#42d392; }

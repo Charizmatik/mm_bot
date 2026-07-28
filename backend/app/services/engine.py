@@ -11,7 +11,7 @@ from sqlalchemy.orm import selectinload
 
 from app.config import Settings
 from app.db import SessionLocal
-from app.exchanges.base import AssetBalance, Exchange, Quote
+from app.exchanges.base import AssetBalance, Exchange, Quote, TransientExchangeError
 from app.models import (
     CycleStatus,
     Event,
@@ -188,6 +188,35 @@ class MarketMakerEngine:
                 await self._process(pair_id)
             except asyncio.CancelledError:
                 raise
+            except TransientExchangeError as exc:
+                diagnostic = describe_exception(exc)
+                if self._pending_exchange_orders.get(pair_id):
+                    cleanup_failures = await self._cancel_pending_exchange_orders(pair_id)
+                    if cleanup_failures:
+                        diagnostic += (
+                            "; FAILED TO CANCEL UNCOMMITTED ORDERS: "
+                            + ", ".join(cleanup_failures)
+                        )
+                        await self._disable_pair_after_error(pair_id, diagnostic)
+                        return
+                    diagnostic += "; uncommitted exchange orders were canceled"
+                logger.warning(
+                    "Temporary exchange error while processing pair %s; "
+                    "will retry next tick: %s",
+                    pair_id,
+                    diagnostic,
+                )
+                async with SessionLocal() as session:
+                    pair = await session.get(PairConfig, pair_id)
+                    if pair and pair.last_error != diagnostic:
+                        pair.last_error = diagnostic
+                        session.add(Event(
+                            pair_id=pair.id,
+                            level="warning",
+                            kind="exchange_timeout",
+                            message=f"Temporary exchange error; retrying: {diagnostic}",
+                        ))
+                        await session.commit()
             except Exception as exc:
                 cleanup_failures = await self._cancel_pending_exchange_orders(pair_id)
                 diagnostic = describe_exception(exc)
@@ -196,21 +225,26 @@ class MarketMakerEngine:
                         "; FAILED TO CANCEL UNCOMMITTED ORDERS: "
                         + ", ".join(cleanup_failures)
                     )
-                logger.exception("Engine error while processing pair %s: %s", pair_id, diagnostic)
-                async with SessionLocal() as session:
-                    pair = await session.get(PairConfig, pair_id)
-                    if pair:
-                        changed = pair.last_error != diagnostic
-                        pair.enabled = False
-                        pair.status = PairStatus.ERROR
-                        pair.last_error = diagnostic
-                        if changed:
-                            session.add(Event(
-                                pair_id=pair.id, level="error",
-                                kind="engine_error",
-                                message=f"Trading disabled after error: {diagnostic}",
-                            ))
-                        await session.commit()
+                await self._disable_pair_after_error(pair_id, diagnostic)
+
+    async def _disable_pair_after_error(
+        self, pair_id: uuid.UUID, diagnostic: str
+    ) -> None:
+        logger.error("Engine error while processing pair %s: %s", pair_id, diagnostic)
+        async with SessionLocal() as session:
+            pair = await session.get(PairConfig, pair_id)
+            if pair:
+                changed = pair.last_error != diagnostic
+                pair.enabled = False
+                pair.status = PairStatus.ERROR
+                pair.last_error = diagnostic
+                if changed:
+                    session.add(Event(
+                        pair_id=pair.id, level="error",
+                        kind="engine_error",
+                        message=f"Trading disabled after error: {diagnostic}",
+                    ))
+                await session.commit()
 
     async def _process(self, pair_id: uuid.UUID) -> None:
         async with SessionLocal() as session:
