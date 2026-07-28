@@ -99,7 +99,11 @@ class TradeCycle(Base):
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     pair: Mapped[PairConfig] = relationship(back_populates="cycles")
-    orders: Mapped[list["Order"]] = relationship(back_populates="cycle", cascade="all, delete-orphan")
+    orders: Mapped[list["Order"]] = relationship(
+        back_populates="cycle",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
 
 
 class Order(Base):
@@ -118,7 +122,11 @@ class Order(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
     cycle: Mapped[TradeCycle] = relationship(back_populates="orders")
-    fills: Mapped[list["TradeFill"]] = relationship(back_populates="order", cascade="all, delete-orphan")
+    fills: Mapped[list["TradeFill"]] = relationship(
+        back_populates="order",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
 
 
 class TradeFill(Base):
