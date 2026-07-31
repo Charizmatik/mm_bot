@@ -85,3 +85,61 @@ async def test_engine_collections_are_eagerly_available_with_async_session() -> 
         assert len(loaded_cycle.orders[0].fills) == 1
 
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_new_order_fills_remain_available_after_flush() -> None:
+    """A replacement order must not lazy-load fills outside greenlet_spawn."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_factory() as session:
+        pair = PairConfig(
+            symbol="ETHUSDT",
+            base_asset="ETH",
+            quote_asset="USDT",
+            lot_quote=Decimal("1.1"),
+            spread_pct=Decimal("0.15"),
+            base_balance_trigger=Decimal("0"),
+            base_balance_limit=Decimal("0"),
+            quote_balance_trigger=Decimal("0"),
+            quote_balance_limit=Decimal("0"),
+            order_offset_pct=Decimal("0"),
+            red_line_pct=Decimal("1"),
+            pause_minutes=5,
+            price_precision=2,
+            quantity_precision=5,
+            order_pair_count=3,
+        )
+        session.add(pair)
+        await session.flush()
+
+        cycle = TradeCycle(
+            pair_id=pair.id,
+            reference_bid=Decimal("1900"),
+            reference_ask=Decimal("1901"),
+            orders=[],
+        )
+        session.add(cycle)
+        await session.flush()
+
+        order = Order(
+            exchange_order_id="replacement-order",
+            client_order_id="replacement-client-order",
+            side=OrderSide.BUY,
+            status=OrderStatus.FILLED,
+            price=Decimal("1900"),
+            quantity=Decimal("0.001"),
+            executed_quantity=Decimal("0.001"),
+            fills=[],
+        )
+        cycle.orders.append(order)
+        await session.flush()
+
+        # Without the explicit fills=[] initialization used by _open_cycle,
+        # this access raises MissingGreenlet after the flush above.
+        assert order.fills == []
+
+    await engine.dispose()

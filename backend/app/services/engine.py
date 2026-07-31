@@ -218,6 +218,14 @@ class MarketMakerEngine:
                         ))
                         await session.commit()
             except Exception as exc:
+                # Preserve the original stack before cleanup performs more
+                # awaits (and can itself fail). The persisted diagnostic is
+                # intentionally compact, while container logs must retain the
+                # exact application line for future production incidents.
+                logger.exception(
+                    "Unhandled engine exception while processing pair %s",
+                    pair_id,
+                )
                 cleanup_failures = await self._cancel_pending_exchange_orders(pair_id)
                 diagnostic = describe_exception(exc)
                 if cleanup_failures:
@@ -341,14 +349,30 @@ class MarketMakerEngine:
         prices: Prices | None = None,
         placement: str = "bootstrap",
     ) -> TradeCycle:
-        prices = prices or target_prices(quote.bid, quote.ask, pair.spread_pct, pair.price_precision)
+        # Keep plain Python values across exchange awaits.  A failed database
+        # transaction expires ORM attributes even with expire_on_commit=False;
+        # touching ``pair.symbol`` (or even ``pair.id``) while cleaning up
+        # exchange orders would then attempt implicit async IO and raise
+        # MissingGreenlet, masking the original failure.
+        pair_id = pair.id
+        symbol = pair.symbol
+        base_asset = pair.base_asset
+        quote_asset = pair.quote_asset
+        spread_pct = pair.spread_pct
+        price_precision = pair.price_precision
+        quantity_precision = pair.quantity_precision
+        lot_quote = pair.lot_quote
+
+        prices = prices or target_prices(
+            quote.bid, quote.ask, spread_pct, price_precision
+        )
         if prices.buy >= prices.sell:
             raise RuntimeError("spread is below price precision")
-        buy_qty, sell_qty = quantities(pair.lot_quote, prices, pair.quantity_precision)
+        buy_qty, sell_qty = quantities(lot_quote, prices, quantity_precision)
         if buy_qty <= 0 or sell_qty <= 0:
             raise RuntimeError("lot is below quantity precision")
         cycle = TradeCycle(
-            pair_id=pair.id,
+            pair_id=pair_id,
             reference_bid=quote.bid,
             reference_ask=quote.ask,
             grid_slot=grid_slot,
@@ -360,17 +384,17 @@ class MarketMakerEngine:
         async with self._order_placement_lock:
             if not self.settings.dry_run:
                 balances, _ = await self._account_balances(force=True)
-                base_free = self._balance(balances, pair.base_asset).free
-                quote_free = self._balance(balances, pair.quote_asset).free
+                base_free = self._balance(balances, base_asset).free
+                quote_free = self._balance(balances, quote_asset).free
                 buy_cost = buy_qty * prices.buy
                 if quote_free < buy_cost:
                     raise RuntimeError(
-                        f"insufficient free {pair.quote_asset}: "
+                        f"insufficient free {quote_asset}: "
                         f"need {buy_cost}, available {quote_free}"
                     )
                 if base_free < sell_qty:
                     raise RuntimeError(
-                        f"insufficient free {pair.base_asset}: "
+                        f"insufficient free {base_asset}: "
                         f"need {sell_qty}, available {base_free}"
                     )
             try:
@@ -380,26 +404,26 @@ class MarketMakerEngine:
                 ):
                     client_id = f"mm-{cycle.id.hex[:16]}-{side.value.lower()}"
                     result = await self.exchange.place_limit(
-                        pair.symbol, side, qty, price, client_id
+                        symbol, side, qty, price, client_id
                     )
                     placed.append((side, result, qty, price, client_id))
-                    self._pending_exchange_orders.setdefault(pair.id, []).append(
-                        (pair.symbol, result.order_id)
+                    self._pending_exchange_orders.setdefault(pair_id, []).append(
+                        (symbol, result.order_id)
                     )
             except Exception:
                 for _, result, _, _, _ in placed:
                     try:
-                        await self.exchange.cancel(pair.symbol, result.order_id)
+                        await self.exchange.cancel(symbol, result.order_id)
                     except Exception:
                         logger.exception(
                             "Failed to cancel partially placed order %s for %s",
                             result.order_id,
-                            pair.symbol,
+                            symbol,
                         )
                     else:
                         with contextlib.suppress(ValueError):
-                            self._pending_exchange_orders.get(pair.id, []).remove(
-                                (pair.symbol, result.order_id)
+                            self._pending_exchange_orders.get(pair_id, []).remove(
+                                (symbol, result.order_id)
                             )
                 self._invalidate_balance_cache()
                 raise
@@ -413,8 +437,9 @@ class MarketMakerEngine:
                 price=price,
                 quantity=qty,
                 executed_quantity=result.executed_quantity,
+                fills=[],
             ))
-        session.add(Event(pair_id=pair.id, kind="orders_placed",
+        session.add(Event(pair_id=pair_id, kind="orders_placed",
                           message=(f"Grid {grid_slot} ({placement}): BUY {buy_qty} @ {prices.buy}; "
                                    f"SELL {sell_qty} @ {prices.sell}")))
         return cycle

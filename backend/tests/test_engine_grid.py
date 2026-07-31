@@ -14,8 +14,9 @@ from app.services.engine import MarketMakerEngine
 
 
 class FakeSession:
-    def __init__(self) -> None:
+    def __init__(self, after_flush=None) -> None:
         self.added: list[object] = []
+        self.after_flush = after_flush
 
     def add(self, value: object) -> None:
         self.added.append(value)
@@ -24,6 +25,8 @@ class FakeSession:
         for value in self.added:
             if isinstance(value, TradeCycle) and value.id is None:
                 value.id = uuid.uuid4()
+        if self.after_flush:
+            self.after_flush()
 
 
 class FakeExchange:
@@ -431,6 +434,53 @@ async def test_locked_inventory_does_not_trigger_balance_limit() -> None:
 
     assert not stopped
     assert config.enabled
+
+
+@pytest.mark.asyncio
+async def test_open_cycle_does_not_read_pair_orm_state_after_flush(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exchange = FakeExchange()
+    engine = MarketMakerEngine(exchange, Settings(dry_run=True))  # type: ignore[arg-type]
+    config = pair(1)
+    expired = False
+    guarded_attributes = {
+        "id",
+        "symbol",
+        "base_asset",
+        "quote_asset",
+        "spread_pct",
+        "price_precision",
+        "quantity_precision",
+        "lot_quote",
+    }
+    original_getattribute = PairConfig.__getattribute__
+
+    def guarded_getattribute(self, attribute):
+        if self is config and expired and attribute in guarded_attributes:
+            raise AssertionError(f"expired ORM attribute read: {attribute}")
+        return original_getattribute(self, attribute)
+
+    monkeypatch.setattr(PairConfig, "__getattribute__", guarded_getattribute)
+
+    def expire_pair_state() -> None:
+        # This models SQLAlchemy expiring ORM state after a failed
+        # transaction. Access after this boundary would be an implicit DB
+        # read in production and therefore a MissingGreenlet.
+        nonlocal expired
+        expired = True
+
+    session = FakeSession(after_flush=expire_pair_state)
+    cycle = await engine._open_cycle(
+        session,
+        config,
+        Quote("BTCUSDT", Decimal("99.9"), Decimal("100.1")),
+        grid_slot=0,
+    )
+
+    assert len(exchange.placed) == 2
+    assert len(cycle.orders) == 2
+    assert all(order.fills == [] for order in cycle.orders)
 
 
 @pytest.mark.asyncio
