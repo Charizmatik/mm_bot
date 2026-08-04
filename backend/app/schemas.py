@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -231,12 +231,37 @@ class AnalyticsPeriod(BaseModel):
     by_quote_asset: list[ProfitBucket]
 
 
+class AccountAssetSnapshotRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    asset: str
+    free: Decimal
+    locked: Decimal
+    total: Decimal
+    price_usdt: Decimal | None
+    value_usdt: Decimal | None
+    valuation_source: str | None
+
+
+class AccountEquitySnapshotRead(BaseModel):
+    id: uuid.UUID
+    snapshot_date: date
+    timezone: str
+    captured_at: datetime
+    equity_usdt: Decimal
+    priced_assets: int
+    unpriced_assets: int
+    change_usdt: Decimal | None = None
+    change_pct: Decimal | None = None
+    assets: list[AccountAssetSnapshotRead]
+
+
 class AnalyticsReport(BaseModel):
     date_from: datetime | None
     date_to: datetime
     granularity: str
     totals: Statistics
     periods: list[AnalyticsPeriod]
+    equity_snapshots: list[AccountEquitySnapshotRead]
 
 
 class SymbolRead(BaseModel):

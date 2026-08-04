@@ -1,9 +1,9 @@
 import enum
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -156,3 +156,39 @@ class Event(Base):
     kind: Mapped[str] = mapped_column(String(50))
     message: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class AccountEquitySnapshot(Base):
+    __tablename__ = "account_equity_snapshots"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    snapshot_date: Mapped[date] = mapped_column(Date, unique=True, index=True)
+    timezone: Mapped[str] = mapped_column(String(64), default="Europe/Kyiv")
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    equity_usdt: Mapped[Decimal] = mapped_column(Numeric(30, 12), default=Decimal("0"))
+    priced_assets: Mapped[int] = mapped_column(Integer, default=0)
+    unpriced_assets: Mapped[int] = mapped_column(Integer, default=0)
+
+    assets: Mapped[list["AccountAssetSnapshot"]] = relationship(
+        back_populates="snapshot",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+
+class AccountAssetSnapshot(Base):
+    __tablename__ = "account_asset_snapshots"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("account_equity_snapshots.id"), index=True
+    )
+    asset: Mapped[str] = mapped_column(String(20))
+    free: Mapped[Decimal] = mapped_column(Numeric(30, 12), default=Decimal("0"))
+    locked: Mapped[Decimal] = mapped_column(Numeric(30, 12), default=Decimal("0"))
+    total: Mapped[Decimal] = mapped_column(Numeric(30, 12), default=Decimal("0"))
+    price_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 12), nullable=True)
+    value_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 12), nullable=True)
+    valuation_source: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    snapshot: Mapped[AccountEquitySnapshot] = relationship(back_populates="assets")

@@ -10,6 +10,7 @@ dependencies = [
   "protobuf>=5,<7",
   "pydantic-settings>=2.5,<3",
   "sqlalchemy[asyncio]>=2.0,<3",
+  "tzdata>=2025.2",
   "uvicorn[standard]>=0.30,<1",
   "websockets>=13,<16",
 ]

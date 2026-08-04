@@ -77,9 +77,21 @@ export type AnalyticsPeriod = {
   success_rate_pct: string; trading_volume_usdt: string; by_quote_asset: ProfitBucket[];
 };
 
+export type AccountAssetSnapshot = {
+  asset: string; free: string; locked: string; total: string;
+  price_usdt: string | null; value_usdt: string | null; valuation_source: string | null;
+};
+
+export type AccountEquitySnapshot = {
+  id: string; snapshot_date: string; timezone: string; captured_at: string;
+  equity_usdt: string; priced_assets: number; unpriced_assets: number;
+  change_usdt: string | null; change_pct: string | null;
+  assets: AccountAssetSnapshot[];
+};
+
 export type AnalyticsReport = {
   date_from: string | null; date_to: string; granularity: 'day' | 'week' | 'month';
-  totals: Statistics; periods: AnalyticsPeriod[];
+  totals: Statistics; periods: AnalyticsPeriod[]; equity_snapshots: AccountEquitySnapshot[];
 };
 
 export type ExchangeSymbol = {

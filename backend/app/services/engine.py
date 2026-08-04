@@ -3,10 +3,12 @@ import contextlib
 import logging
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from decimal import Decimal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from app.config import Settings
@@ -14,6 +16,8 @@ from app.db import SessionLocal
 from app.exchanges.base import AssetBalance, Exchange, Quote, TransientExchangeError
 from app.models import (
     CycleStatus,
+    AccountAssetSnapshot,
+    AccountEquitySnapshot,
     Event,
     Order,
     OrderSide,
@@ -63,6 +67,7 @@ class MarketMakerEngine:
         self._order_placement_lock = asyncio.Lock()
         self._runner: asyncio.Task | None = None
         self._stream: asyncio.Task | None = None
+        self._snapshot_runner: asyncio.Task | None = None
         self._symbols: set[str] = set()
         self._stream_restart_requested = False
         self._stale_quote_symbols: set[str] = set()
@@ -73,15 +78,122 @@ class MarketMakerEngine:
     async def start(self) -> None:
         self._stopping = False
         self._runner = asyncio.create_task(self._run(), name="market-maker-engine")
+        self._snapshot_runner = asyncio.create_task(
+            self._run_account_snapshots(), name="account-equity-snapshots"
+        )
 
     async def stop(self) -> None:
         self._stopping = True
-        for task in (self._runner, self._stream):
+        for task in (self._runner, self._stream, self._snapshot_runner):
             if task:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
         await self.exchange.close()
+
+    def _snapshot_timezone(self) -> tzinfo:
+        try:
+            return ZoneInfo(self.settings.account_snapshot_timezone)
+        except ZoneInfoNotFoundError:
+            logger.error(
+                "Unknown ACCOUNT_SNAPSHOT_TIMEZONE=%s; falling back to UTC",
+                self.settings.account_snapshot_timezone,
+            )
+            return timezone.utc
+
+    async def _run_account_snapshots(self) -> None:
+        """Create one account-equity checkpoint per configured local calendar day."""
+        while not self._stopping:
+            try:
+                await self.capture_account_equity_if_missing()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Failed to capture account equity snapshot")
+            await asyncio.sleep(30)
+
+    async def capture_account_equity_if_missing(self) -> AccountEquitySnapshot | None:
+        timezone_info = self._snapshot_timezone()
+        captured_at = datetime.now(timezone.utc)
+        snapshot_date = captured_at.astimezone(timezone_info).date()
+        async with SessionLocal() as session:
+            existing = await session.scalar(
+                select(AccountEquitySnapshot).where(
+                    AccountEquitySnapshot.snapshot_date == snapshot_date
+                )
+            )
+            if existing:
+                return None
+
+        balances, _ = await self._account_balances(force=True)
+        assets: list[AccountAssetSnapshot] = []
+        equity_usdt = Decimal("0")
+        priced_assets = unpriced_assets = 0
+        for asset, balance in sorted(balances.items()):
+            total = balance.total
+            if total == 0:
+                continue
+            price_usdt, valuation_source = await self._asset_price_usdt(asset)
+            value_usdt = total * price_usdt if price_usdt is not None else None
+            if value_usdt is None:
+                unpriced_assets += 1
+            else:
+                priced_assets += 1
+                equity_usdt += value_usdt
+            assets.append(AccountAssetSnapshot(
+                asset=asset.upper(),
+                free=balance.free,
+                locked=balance.locked,
+                total=total,
+                price_usdt=price_usdt,
+                value_usdt=value_usdt,
+                valuation_source=valuation_source,
+            ))
+
+        snapshot = AccountEquitySnapshot(
+            snapshot_date=snapshot_date,
+            timezone=str(timezone_info),
+            captured_at=captured_at,
+            equity_usdt=equity_usdt,
+            priced_assets=priced_assets,
+            unpriced_assets=unpriced_assets,
+            assets=assets,
+        )
+        async with SessionLocal() as session:
+            session.add(snapshot)
+            session.add(Event(
+                kind="account_equity_snapshot",
+                message=(
+                    f"Account equity snapshot: {equity_usdt} USDT; "
+                    f"priced assets={priced_assets}; unpriced assets={unpriced_assets}"
+                ),
+            ))
+            try:
+                await session.commit()
+            except IntegrityError:
+                # Multiple API workers may reach midnight together. The unique
+                # snapshot date makes the first committed checkpoint canonical.
+                await session.rollback()
+                return None
+        return snapshot
+
+    async def _asset_price_usdt(self, asset: str) -> tuple[Decimal | None, str | None]:
+        asset = asset.upper()
+        if asset == "USDT":
+            return Decimal("1"), "USDT"
+        try:
+            quote = await self.exchange.book_quote(f"{asset}USDT")
+            if quote.bid > 0:
+                return quote.bid, f"{asset}USDT.bid"
+        except Exception:
+            pass
+        try:
+            quote = await self.exchange.book_quote(f"USDT{asset}")
+            if quote.ask > 0:
+                return Decimal("1") / quote.ask, f"USDT{asset}.ask_inverse"
+        except Exception:
+            pass
+        return None, None
 
     async def _on_quote(self, quote: Quote) -> None:
         self.quotes[quote.symbol] = (quote, datetime.now(timezone.utc))

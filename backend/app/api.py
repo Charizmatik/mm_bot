@@ -12,9 +12,11 @@ from sqlalchemy.orm import selectinload
 from app.config import get_settings
 from app.db import get_session
 from app.models import (
-    CycleStatus, Event, Order, OrderSide, OrderStatus, PairConfig, PairStatus, TradeCycle,
+    AccountEquitySnapshot, CycleStatus, Event, Order, OrderSide, OrderStatus, PairConfig,
+    PairStatus, TradeCycle,
 )
 from app.schemas import (
+    AccountAssetSnapshotRead, AccountEquitySnapshotRead,
     ActiveOrderRead, AnalyticsPeriod, AnalyticsReport, EventPage, EventRead, FillRead, Health,
     OrderPage, OrderPairCountUpdate, OrderRead, PairCreate, PairRead,
     PairRuntime, PairUpdate, RedLineRead,
@@ -584,6 +586,36 @@ def _next_period(value: datetime, granularity: str) -> datetime:
     )
 
 
+def _equity_snapshot_reads(
+    snapshots: list[AccountEquitySnapshot],
+) -> list[AccountEquitySnapshotRead]:
+    result: list[AccountEquitySnapshotRead] = []
+    previous_equity: Decimal | None = None
+    for snapshot in snapshots:
+        change = (
+            snapshot.equity_usdt - previous_equity
+            if previous_equity is not None else None
+        )
+        change_pct = (
+            change * Decimal("100") / previous_equity
+            if change is not None and previous_equity != 0 else None
+        )
+        result.append(AccountEquitySnapshotRead(
+            id=snapshot.id,
+            snapshot_date=snapshot.snapshot_date,
+            timezone=snapshot.timezone,
+            captured_at=snapshot.captured_at,
+            equity_usdt=snapshot.equity_usdt,
+            priced_assets=snapshot.priced_assets,
+            unpriced_assets=snapshot.unpriced_assets,
+            change_usdt=change,
+            change_pct=change_pct,
+            assets=[AccountAssetSnapshotRead.model_validate(asset) for asset in snapshot.assets],
+        ))
+        previous_equity = snapshot.equity_usdt
+    return result
+
+
 @router.get("/statistics", response_model=Statistics)
 async def statistics(
     paper_profit: bool = False,
@@ -635,6 +667,19 @@ async def analytics(
         )
     ).all())
 
+    all_equity_snapshots = list((await session.scalars(
+        select(AccountEquitySnapshot)
+        .options(selectinload(AccountEquitySnapshot.assets))
+        .where(AccountEquitySnapshot.snapshot_date <= end.date())
+        .order_by(AccountEquitySnapshot.snapshot_date)
+    )).all())
+    equity_snapshots = _equity_snapshot_reads(all_equity_snapshots)
+    if date_from:
+        equity_snapshots = [
+            snapshot for snapshot in equity_snapshots
+            if snapshot.snapshot_date >= date_from.date()
+        ]
+
     grouped: dict[datetime, list[tuple[TradeCycle, PairConfig]]] = {}
     for cycle, pair in rows:
         grouped.setdefault(_period_start(cycle.closed_at, granularity), []).append((cycle, pair))
@@ -656,4 +701,5 @@ async def analytics(
     return AnalyticsReport(
         date_from=date_from, date_to=end, granularity=granularity,
         totals=_summarize_cycles(rows, paper_profit), periods=periods,
+        equity_snapshots=equity_snapshots,
     )

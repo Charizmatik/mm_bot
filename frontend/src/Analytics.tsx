@@ -8,7 +8,7 @@ const EMPTY_REPORT: AnalyticsReport = {
     successful_trades: 0, unsuccessful_trades: 0, total_trades: 0,
     success_rate_pct: '0', by_quote_asset: [], pairs: [],
   },
-  periods: [],
+  periods: [], equity_snapshots: [],
 };
 
 function formatNumber(value: string | number, precision = 2) {
@@ -71,6 +71,8 @@ export default function AnalyticsPage() {
   const maxVolume = Math.max(1, ...report.periods.map(item => Number(item.trading_volume_usdt)));
   const maxTrades = Math.max(1, ...report.periods.map(item => item.total_trades));
   const periodRows = useMemo(() => [...report.periods].reverse(), [report.periods]);
+  const equityRows = useMemo(() => [...report.equity_snapshots].reverse(), [report.equity_snapshots]);
+  const latestEquity = equityRows[0];
 
   return <main>
     <header>
@@ -130,6 +132,46 @@ export default function AnalyticsPage() {
             <div><dt>Комісії</dt><dd>{formatNumber(bucket.commission, 8)}</dd></div></dl>
         </article>)}
       </div>}
+
+      <div className="analytics-section equity-section">
+        <div className="section-title"><div><h3>Контроль Equity акаунта</h3>
+          <p>Щоденний знімок о 00:00 Europe/Kyiv. Зміна включає торгівлю, рух ринку та зовнішні перекази.</p></div>
+          <span>{report.equity_snapshots.length} знімків</span></div>
+        {!latestEquity ? <div className="empty">Перший контрольний знімок буде створено після запуску backend.</div> : <>
+          <div className="stats-grid equity-summary">
+            <Metric label="Поточна контрольна Equity" value={`${formatNumber(latestEquity.equity_usdt, 6)} USDT`} />
+            <Metric label="Зміна за добу" value={latestEquity.change_usdt === null ? 'Базовий знімок'
+              : `${Number(latestEquity.change_usdt) >= 0 ? '+' : ''}${formatNumber(latestEquity.change_usdt, 6)} USDT`} />
+            <Metric label="Зміна, %" value={latestEquity.change_pct === null ? '—'
+              : `${Number(latestEquity.change_pct) >= 0 ? '+' : ''}${formatNumber(latestEquity.change_pct, 4)}%`} />
+            <Metric label="Оцінка активів" value={latestEquity.unpriced_assets === 0
+              ? `${latestEquity.priced_assets} з ${latestEquity.priced_assets}`
+              : `${latestEquity.priced_assets} оцінено · ${latestEquity.unpriced_assets} без ціни`} />
+          </div>
+          {latestEquity.unpriced_assets > 0 && <div className="equity-warning">
+            Equity неповна: активи без доступної USDT-ціни не включені в загальну суму.
+          </div>}
+          <div className="equity-layout">
+            <div><h4>Історія контрольних точок</h4><div className="table-scroll"><table><thead><tr>
+              <th>Дата</th><th>Фіксація</th><th>Equity</th><th>Зміна</th><th>Зміна, %</th>
+            </tr></thead><tbody>{equityRows.map(item => <tr key={item.id}>
+              <td><strong>{new Date(`${item.snapshot_date}T00:00:00`).toLocaleDateString('uk-UA')}</strong></td>
+              <td>{new Date(item.captured_at).toLocaleTimeString('uk-UA', {hour: '2-digit', minute: '2-digit'})}</td>
+              <td>{formatNumber(item.equity_usdt, 6)} USDT</td>
+              <td className={item.change_usdt === null ? '' : Number(item.change_usdt) >= 0 ? 'positive' : 'negative'}>
+                {item.change_usdt === null ? 'База' : `${Number(item.change_usdt) >= 0 ? '+' : ''}${formatNumber(item.change_usdt, 6)} USDT`}</td>
+              <td>{item.change_pct === null ? '—' : `${Number(item.change_pct) >= 0 ? '+' : ''}${formatNumber(item.change_pct, 4)}%`}</td>
+            </tr>)}</tbody></table></div></div>
+            <div><h4>Склад останнього знімка</h4><div className="table-scroll"><table><thead><tr>
+              <th>Актив</th><th>Всього</th><th>Ціна, USDT</th><th>Вартість</th>
+            </tr></thead><tbody>{latestEquity.assets.map(asset => <tr key={asset.asset}>
+              <td><strong>{asset.asset}</strong></td><td>{formatNumber(asset.total, 8)}</td>
+              <td>{asset.price_usdt === null ? 'Немає ціни' : formatNumber(asset.price_usdt, 8)}</td>
+              <td>{asset.value_usdt === null ? 'Не включено' : `${formatNumber(asset.value_usdt, 6)} USDT`}</td>
+            </tr>)}</tbody></table></div></div>
+          </div>
+        </>}
+      </div>
 
       <div className="analytics-section">
         <div className="section-title"><h3>Динаміка за періодами</h3><span>{report.periods.length} періодів</span></div>

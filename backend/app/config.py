@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     mexc_recv_window_ms: int = 10_000
     mexc_time_sync_interval_seconds: float = 300
     paper_maker_fee_pct: Decimal = Decimal("0.1")
+    account_snapshot_timezone: str = "Europe/Kyiv"
 
     @property
     def cors_origin_list(self) -> list[str]:
